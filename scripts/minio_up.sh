@@ -20,8 +20,8 @@ function create_service_account() {
   echo 'Logging into MinIO instance...'
   login_payload=$(
     jq -crn \
-    --arg accessKey "$minio_root_user" \
-    --arg secretKey "$minio_root_pw" \
+    --arg accessKey "$1" \
+    --arg secretKey "$2" \
     '$ARGS.named'
   )
 
@@ -105,6 +105,9 @@ if [ "$healthy" = false ]; then
 fi
 echo 'Done!'
 
+sleep 2 # Despite doing a healthcheck, it seems like we still have to wait for instance to stabilize.
+create_service_account $minio_root_user $minio_root_pw
+
 echo '###########################################################'
 echo 'MinIO instance information:'
 echo "  Container Name:      $container_name"
@@ -116,6 +119,6 @@ fi
 if [ -n "${MINIO_SECRET_KEY}" ]; then
   echo "  Service Account Secret Key: $MINIO_SECRET_KEY"
 fi
-echo 'You can use the root username and password as'
-echo 'access key and secret key respectively.'
+echo 'You can use the root username and password as access key'
+echo 'and secret key respectively (not in the plugin though).'
 echo '###########################################################'
