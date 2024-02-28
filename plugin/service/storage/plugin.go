@@ -82,8 +82,9 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 }
 
 // OnDeleteStorageBucket is a hook that runs when a storage bucket is deleted.
+// Since this plugin manages no state at the moment, this function is a no-op.
 func (sp *StoragePlugin) OnDeleteStorageBucket(ctx context.Context, req *pb.OnDeleteStorageBucketRequest) (*pb.OnDeleteStorageBucketResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return &pb.OnDeleteStorageBucketResponse{}, nil
 }
 
 // ValidatePermissions is a hook that checks if the secrets associated with the
