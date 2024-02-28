@@ -4,10 +4,20 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"path"
 
+	"github.com/google/uuid"
+	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
+	madmin "github.com/minio/madmin-go/v3"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ pb.StoragePluginServiceServer = (*StoragePlugin)(nil)
@@ -20,7 +30,45 @@ type StoragePlugin struct {
 
 // OnCreateStorageBucket is a hook that runs when a storage bucket is created.
 func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCreateStorageBucketRequest) (*pb.OnCreateStorageBucketResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes(), bucket.GetSecrets())
+	if err != nil {
+		return nil, err // getStorageAttributes already returns a "status"-type error.
+	}
+
+	err = ensureServiceAccount(ctx, sa)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+	}
+
+	err = dryRun(ctx, cl, bucket)
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to verify provided minio environment: %v", err)
+	}
+
+	persistedData, err := structpb.NewStruct(sa.SecretsToMap())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to convert storage attributes to protobuf struct: %v", err)
+	}
+	return &pb.OnCreateStorageBucketResponse{
+		Persisted: &storagebuckets.StorageBucketPersisted{Data: persistedData},
+	}, nil
 }
 
 // OnUpdateStorageBucket is a hook that runs when a storage bucket is updated.
@@ -36,7 +84,39 @@ func (sp *StoragePlugin) OnDeleteStorageBucket(ctx context.Context, req *pb.OnDe
 // ValidatePermissions is a hook that checks if the secrets associated with the
 // storage bucket meet the requirements of the plugin.
 func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.ValidatePermissionsRequest) (*pb.ValidatePermissionsResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes(), bucket.GetSecrets())
+	if err != nil {
+		return nil, err // getStorageAttributes already returns a "status"-type error.
+	}
+
+	err = ensureServiceAccount(ctx, sa)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+	}
+
+	err = dryRun(ctx, cl, bucket)
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to verify provided minio environment: %v", err)
+	}
+
+	return &pb.ValidatePermissionsResponse{}, nil
 }
 
 // HeadObject is a hook that retrieves metadata about an object.
@@ -59,4 +139,57 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 // provided key prefix.
 func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObjectsRequest) (*pb.DeleteObjectsResponse, error) {
 	return nil, fmt.Errorf("unimplemented")
+}
+
+func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket) error {
+	objectKey := path.Join(bucket.GetBucketPrefix(), uuid.New().String())
+	rd := bytes.NewReader([]byte("hashicorp boundary minio plugin access test"))
+	_, err := cl.PutObject(ctx, bucket.GetBucketName(), objectKey, rd, rd.Size(), minio.PutObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to put object at %q: %w", objectKey, err)
+	}
+
+	_, err = cl.StatObject(ctx, bucket.GetBucketName(), objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to stat object at %q: %w", objectKey, err)
+	}
+
+	_, err = cl.GetObject(ctx, bucket.GetBucketName(), objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get object at %q: %w", objectKey, err)
+	}
+
+	oiCh := cl.ListObjects(ctx, bucket.GetBucketName(), minio.ListObjectsOptions{Recursive: true})
+	for oi := range oiCh {
+		if oi.Err != nil {
+			return fmt.Errorf("failed to list objects in bucket %q: %w", bucket.GetBucketName(), oi.Err)
+		}
+	}
+
+	err = cl.RemoveObject(ctx, bucket.GetBucketName(), objectKey, minio.RemoveObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to remove object at %q: %w", objectKey, err)
+	}
+
+	return nil
+}
+
+// ensureServiceAccount ensures the credentials we received belong to a MinIO
+// service account. This plugin does not support using user credentials for its
+// configuration.
+func ensureServiceAccount(ctx context.Context, sa *StorageAttributes) error {
+	cl, err := madmin.NewWithOptions(sa.EndpointUrl, &madmin.Options{
+		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create madmin client: %w", err)
+	}
+
+	_, err = cl.InfoServiceAccount(ctx, sa.AccessKeyId)
+	if err != nil {
+		return fmt.Errorf("failed to obtain service account info: %w", err)
+	}
+
+	return nil
 }
