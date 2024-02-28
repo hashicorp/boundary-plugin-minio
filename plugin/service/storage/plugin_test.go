@@ -264,7 +264,12 @@ func TestOnCreateStorageBucket(t *testing.T) {
 
 func TestOnUpdateStorageBucket(t *testing.T) {}
 
-func TestOnDeleteStorageBucket(t *testing.T) {}
+func TestOnDeleteStorageBucket(t *testing.T) {
+	sp := new(StoragePlugin)
+	rsp, err := sp.OnDeleteStorageBucket(context.Background(), &plugin.OnDeleteStorageBucketRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, rsp)
+}
 
 func TestValidatePermissions(t *testing.T) {
 	ctx := context.Background()
