@@ -78,7 +78,71 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 
 // OnUpdateStorageBucket is a hook that runs when a storage bucket is updated.
 func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUpdateStorageBucketRequest) (*pb.OnUpdateStorageBucketResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	newBucket := req.GetNewBucket()
+	if newBucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "new bucket is required")
+	}
+	if newBucket.BucketName == "" {
+		return nil, status.Error(codes.InvalidArgument, "new bucketName is required")
+	}
+	oldBucket := req.GetCurrentBucket()
+	if oldBucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "current bucket is required")
+	}
+
+	// current attributes
+	osa, err := getStorageAttributes(oldBucket.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+
+	// new attributes and secrets
+	nsa, err := getStorageAttributes(newBucket.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+
+	sec, err := getStorageSecrets(newBucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case newBucket.GetBucketName() != oldBucket.GetBucketName():
+		return nil, status.Errorf(codes.InvalidArgument, "cannot update attribute BucketName")
+	case newBucket.GetBucketPrefix() != oldBucket.GetBucketPrefix():
+		return nil, status.Errorf(codes.InvalidArgument, "cannot update attribute BucketPrefix")
+	case nsa.Region != osa.Region:
+		return nil, status.Errorf(codes.InvalidArgument, "cannot update attribute Region")
+	case nsa.EndpointUrl != osa.EndpointUrl:
+		return nil, status.Errorf(codes.InvalidArgument, "cannot update attribute EndpointUrl")
+	}
+
+	if err = ensureServiceAccount(ctx, nsa, sec); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %s", err)
+	}
+
+	cl, err := minio.New(nsa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: nsa.UseSSL,
+		Region: nsa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to create minio sdk client: %s", err)
+	}
+
+	if err = dryRun(ctx, cl, newBucket); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to verify provided minio environment: %s", err)
+	}
+
+	persisted, err := structpb.NewStruct(sec.AsMap())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to convert storage attributes to protobuf struct: %s", err)
+	}
+
+	return &pb.OnUpdateStorageBucketResponse{
+		Persisted: &storagebuckets.StorageBucketPersisted{Data: persisted},
+	}, nil
 }
 
 // OnDeleteStorageBucket is a hook that runs when a storage bucket is deleted.

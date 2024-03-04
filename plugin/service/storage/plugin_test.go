@@ -15,6 +15,8 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -262,7 +264,401 @@ func TestOnCreateStorageBucket(t *testing.T) {
 	}
 }
 
-func TestOnUpdateStorageBucket(t *testing.T) {}
+func TestOnUpdateStorageBucket(t *testing.T) {
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+
+	bucketName := "test-bucket"
+	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
+
+	tests := []struct {
+		name     string
+		req      *plugin.OnUpdateStorageBucketRequest
+		expected *plugin.OnUpdateStorageBucketResponse
+		err      string
+		errCode  codes.Code
+	}{
+		{
+			name:    "nilNewBucket",
+			req:     &plugin.OnUpdateStorageBucketRequest{},
+			err:     "new bucket is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyNewBucketName",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{},
+			},
+			err:     "new bucketName is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "nilCurrentBucket",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+				},
+			},
+			err:     "current bucket is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "nilCurrentBucketAttributes",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{},
+			},
+			err:     "empty attributes input",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "nilNewBucketAttributes",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Secrets:    new(structpb.Struct),
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "empty attributes input",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "nilNewBucketSecrets",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "empty secrets input",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "errorReadingAttributes",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Secrets:    new(structpb.Struct),
+					Attributes: new(structpb.Struct),
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "empty attributes input",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "errorReadingSecrets",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: new(structpb.Struct),
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "empty secrets input",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "invalidBucketNameUpdate",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo2",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "cannot update attribute BucketName",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "invalidBucketPrefixUpdate",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName:   "foo",
+					BucketPrefix: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "cannot update attribute BucketPrefix",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "invalidRegionUpdate",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							"region":         structpb.NewStringValue("a region"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "cannot update attribute Region",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "invalidEndpointUrlUpdate",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://localhost:9000"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: "foo",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+			},
+			err:     "cannot update attribute EndpointUrl",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "usingNonServiceAccount",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
+			err:     "The specified service account is not found (Specified service account does not exist)",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "dryRunFail",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: func() map[string]*structpb.Value {
+							creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+								Policy: policyDenyPutObject,
+							})
+							require.NoError(t, err)
+
+							return map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+							}
+						}(),
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
+			err:     "failed to verify provided minio environment: failed to put object",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "success",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
+			expected: &plugin.OnUpdateStorageBucketResponse{
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			sp := new(StoragePlugin)
+			res, err := sp.OnUpdateStorageBucket(ctx, tt.req)
+			if tt.err != "" {
+				require.ErrorContains(err, tt.err)
+				require.Equal(tt.errCode.String(), status.Code(err).String())
+				require.Nil(res)
+				return
+			}
+
+			require.NoError(err)
+			require.NotNil(res)
+			require.EqualValues(tt.expected, res)
+		})
+	}
+}
 
 func TestOnDeleteStorageBucket(t *testing.T) {
 	sp := new(StoragePlugin)
