@@ -38,18 +38,23 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
 	}
 
-	sa, err := getStorageAttributes(bucket.GetAttributes(), bucket.GetSecrets())
+	sa, err := getStorageAttributes(bucket.GetAttributes())
 	if err != nil {
 		return nil, err // getStorageAttributes already returns a "status"-type error.
 	}
 
-	err = ensureServiceAccount(ctx, sa)
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	err = ensureServiceAccount(ctx, sa, sec)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
 	}
 
 	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
-		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
 		Secure: sa.UseSSL,
 		Region: sa.Region,
 	})
@@ -62,7 +67,7 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 		return nil, status.Errorf(codes.Unknown, "failed to verify provided minio environment: %v", err)
 	}
 
-	persistedData, err := structpb.NewStruct(sa.SecretsToMap())
+	persistedData, err := structpb.NewStruct(sec.AsMap())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to convert storage attributes to protobuf struct: %v", err)
 	}
@@ -92,18 +97,23 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
 	}
 
-	sa, err := getStorageAttributes(bucket.GetAttributes(), bucket.GetSecrets())
+	sa, err := getStorageAttributes(bucket.GetAttributes())
 	if err != nil {
 		return nil, err // getStorageAttributes already returns a "status"-type error.
 	}
 
-	err = ensureServiceAccount(ctx, sa)
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	err = ensureServiceAccount(ctx, sa, sec)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
 	}
 
 	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
-		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
 		Secure: sa.UseSSL,
 		Region: sa.Region,
 	})
@@ -174,20 +184,23 @@ func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.Storag
 	return nil
 }
 
+func newMadminClient(sa *StorageAttributes, sec *StorageSecrets) (*madmin.AdminClient, error) {
+	return madmin.NewWithOptions(sa.EndpointUrl, &madmin.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+	})
+}
+
 // ensureServiceAccount ensures the credentials we received belong to a MinIO
 // service account. This plugin does not support using user credentials for its
 // configuration.
-func ensureServiceAccount(ctx context.Context, sa *StorageAttributes) error {
-	cl, err := madmin.NewWithOptions(sa.EndpointUrl, &madmin.Options{
-		Creds:  credentials.NewStaticV4(sa.AccessKeyId, sa.SecretAccessKey, ""),
-		Secure: sa.UseSSL,
-	})
+func ensureServiceAccount(ctx context.Context, sa *StorageAttributes, sec *StorageSecrets) error {
+	cl, err := newMadminClient(sa, sec)
 	if err != nil {
 		return fmt.Errorf("failed to create madmin client: %w", err)
 	}
 
-	_, err = cl.InfoServiceAccount(ctx, sa.AccessKeyId)
-	if err != nil {
+	if _, err = cl.InfoServiceAccount(ctx, sec.AccessKeyId); err != nil {
 		return fmt.Errorf("failed to obtain service account info: %w", err)
 	}
 
