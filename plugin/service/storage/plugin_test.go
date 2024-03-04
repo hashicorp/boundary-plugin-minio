@@ -4,10 +4,14 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"path"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 	internaltest "github.com/hashicorp/boundary-plugin-minio/internal/testing"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	"github.com/hashicorp/boundary/sdk/pbs/plugin"
@@ -802,7 +806,188 @@ func TestValidatePermissions(t *testing.T) {
 	}
 }
 
-func TestHeadObject(t *testing.T) {}
+func TestHeadObject(t *testing.T) {
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+
+	bucketName := "test-bucket"
+	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	require.NoError(t, err)
+
+	objectKey := fmt.Sprintf("test-head-object-%s", uuid.New().String())
+	rd := bytes.NewReader([]byte("test-head-object-contents"))
+	_, err = server.Client.PutObject(ctx, bucketName, objectKey, rd, rd.Size(), minio.PutObjectOptions{})
+	require.NoError(t, err)
+
+	bucketPrefix := "prefix"
+	rd2 := bytes.NewReader([]byte("test-head-object-contents"))
+	_, err = server.Client.PutObject(ctx, bucketName, path.Join(bucketPrefix, objectKey), rd2, rd2.Size(), minio.PutObjectOptions{})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		req       *plugin.HeadObjectRequest
+		expErrMsg string
+	}{
+		{
+			name:      "nilBucket",
+			req:       &plugin.HeadObjectRequest{Bucket: nil},
+			expErrMsg: "no storage bucket information found",
+		},
+		{
+			name: "emptyBucket",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{},
+			},
+			expErrMsg: "storage bucket name is required",
+		},
+		{
+			name: "emptyObjectKey",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+				},
+				Key: "",
+			},
+			expErrMsg: "object key is required",
+		},
+		{
+			name: "badStorageAttributes",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				Key: "object-key",
+			},
+			expErrMsg: "attributes.endpoint_url.format: unknown protocol, should be http:// or https://",
+		},
+		{
+			name: "badStorageSecrets",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("http://foo"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"access_key_id": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				Key: "object-key",
+			},
+			expErrMsg: "secrets.secret_access_key: missing required value \"secret_access_key\"",
+		},
+		{
+			name: "statObjectFail",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://localhost:1"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue("foo"),
+							ConstSecretAccessKey: structpb.NewStringValue("bar"),
+						},
+					},
+				},
+				Key: "object-key",
+			},
+			expErrMsg: "failed to stat object",
+		},
+		{
+			name: "nonExistantKey",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key: "doesnt-exist",
+			},
+			expErrMsg: "failed to stat object: The specified key does not exist.",
+		},
+		{
+			name: "success",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key: objectKey,
+			},
+		},
+		{
+			name: "successWithBucketPrefix",
+			req: &plugin.HeadObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName:   bucketName,
+					BucketPrefix: bucketPrefix,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key: objectKey,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sp := new(StoragePlugin)
+			rsp, err := sp.HeadObject(ctx, tt.req)
+			if tt.expErrMsg != "" {
+				require.ErrorContains(t, err, tt.expErrMsg)
+				require.Nil(t, rsp)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, rsp)
+			require.Equal(t, rd.Size(), rsp.GetContentLength())
+			require.NotEmpty(t, rsp.GetLastModified().AsTime())
+		})
+	}
+}
 
 func TestGetObject(t *testing.T) {}
 

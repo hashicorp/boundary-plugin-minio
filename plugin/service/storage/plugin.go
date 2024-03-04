@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ pb.StoragePluginServiceServer = (*StoragePlugin)(nil)
@@ -196,7 +197,47 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 
 // HeadObject is a hook that retrieves metadata about an object.
 func (sp *StoragePlugin) HeadObject(ctx context.Context, req *pb.HeadObjectRequest) (*pb.HeadObjectResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	if req.GetKey() == "" {
+		return nil, status.Error(codes.InvalidArgument, "object key is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes())
+	if err != nil {
+		return nil, err // getStorageAttributes already returns a "status"-type error.
+	}
+
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+	}
+
+	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
+	oi, err := cl.StatObject(ctx, bucket.GetBucketName(), objKey, minio.StatObjectOptions{})
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to stat object: %v", err)
+	}
+
+	return &pb.HeadObjectResponse{
+		ContentLength: oi.Size,
+		LastModified:  timestamppb.New(oi.LastModified),
+	}, nil
 }
 
 // GetObject is a hook that retrieves objects.
