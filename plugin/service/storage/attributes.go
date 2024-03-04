@@ -22,12 +22,6 @@ const (
 )
 
 type StorageAttributes struct {
-	// AccessKeyId is the MinIO Access Key Id. This field is required and comes
-	// from user input.
-	AccessKeyId string
-	// SecretAccessKey is the MinIO Secret Access Key. This field is required
-	// and comes from user input.
-	SecretAccessKey string
 	// EndpointUrl is the MinIO server URL. This field is required and comes
 	// from user input.
 	EndpointUrl string
@@ -39,20 +33,27 @@ type StorageAttributes struct {
 	UseSSL bool
 }
 
-// ToMap returns a map StorageAttributes's secret fields as a map.
-func (sa *StorageAttributes) SecretsToMap() map[string]any {
+type StorageSecrets struct {
+	// AccessKeyId is the MinIO Access Key Id. This field is required and comes
+	// from user input.
+	AccessKeyId string
+	// SecretAccessKey is the MinIO Secret Access Key. This field is required
+	// and comes from user input.
+	SecretAccessKey string
+}
+
+// AsMap returns a map StorageAttributes's secret fields as a map.
+func (sa *StorageSecrets) AsMap() map[string]any {
 	return map[string]any{
 		ConstAccessKeyId:     sa.AccessKeyId,
 		ConstSecretAccessKey: sa.SecretAccessKey,
 	}
 }
 
-func getStorageAttributes(inAttributes *structpb.Struct, inSecrets *structpb.Struct) (*StorageAttributes, error) {
+// getStorageAttributes accepts a *structpb.Struct and returns a valid StorageAttributes struct or a status error
+func getStorageAttributes(inAttributes *structpb.Struct) (*StorageAttributes, error) {
 	if inAttributes == nil || inAttributes.GetFields() == nil || len(inAttributes.GetFields()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "empty attributes input")
-	}
-	if inSecrets == nil || inSecrets.GetFields() == nil || len(inSecrets.GetFields()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "empty secrets input")
+		return nil, status.Errorf(codes.InvalidArgument, "empty attributes input")
 	}
 
 	badFields := make(map[string]string)
@@ -86,6 +87,24 @@ func getStorageAttributes(inAttributes *structpb.Struct, inSecrets *structpb.Str
 		badFields[fmt.Sprintf("attributes.%s", s)] = "unrecognized field"
 	}
 
+	if len(badFields) > 0 {
+		return nil, errors.InvalidArgumentError("invalid or unrecognized attributes found", badFields)
+	}
+	return &StorageAttributes{
+		EndpointUrl: endpointUrl,
+		Region:      region,
+		UseSSL:      useSSL,
+	}, nil
+}
+
+// getStorageSecrets accepts a *structpb.Struct and returns a valid StorageSecrets struct or a status error
+func getStorageSecrets(inSecrets *structpb.Struct) (*StorageSecrets, error) {
+	if inSecrets == nil || inSecrets.GetFields() == nil || len(inSecrets.GetFields()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "empty secrets input")
+	}
+
+	badFields := make(map[string]string)
+
 	unknownSecretFields := values.StructFields(inSecrets)
 	accessKeyId, err := values.GetStringValue(inSecrets, ConstAccessKeyId, true)
 	if err != nil {
@@ -104,13 +123,10 @@ func getStorageAttributes(inAttributes *structpb.Struct, inSecrets *structpb.Str
 	}
 
 	if len(badFields) > 0 {
-		return nil, errors.InvalidArgumentError("invalid or unrecognized attributes/secrets found", badFields)
+		return nil, errors.InvalidArgumentError("invalid or unrecognized secrets found", badFields)
 	}
-	return &StorageAttributes{
+	return &StorageSecrets{
 		AccessKeyId:     accessKeyId,
 		SecretAccessKey: secretAccessKey,
-		EndpointUrl:     endpointUrl,
-		Region:          region,
-		UseSSL:          useSSL,
 	}, nil
 }

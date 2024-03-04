@@ -154,6 +154,20 @@ func TestOnCreateStorageBucket(t *testing.T) {
 			expErrMsg: "empty attributes input",
 		},
 		{
+			name: "badStorageSecrets",
+			req: &plugin.OnCreateStorageBucketRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://foo"),
+						},
+					},
+				},
+			},
+			expErrMsg: "empty secrets input",
+		},
+		{
 			name: "usingNonServiceAccount",
 			req: &plugin.OnCreateStorageBucketRequest{
 				Bucket: &storagebuckets.StorageBucket{
@@ -288,6 +302,20 @@ func TestValidatePermissions(t *testing.T) {
 				},
 			},
 			expErrMsg: "empty attributes input",
+		},
+		{
+			name: "badStorageSecrets",
+			req: &plugin.ValidatePermissionsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://foo"),
+						},
+					},
+				},
+			},
+			expErrMsg: "empty secrets input",
 		},
 		{
 			name: "usingNonServiceAccount",
@@ -547,30 +575,32 @@ func TestDryRun(t *testing.T) {
 func TestEnsureServiceAccount(t *testing.T) {
 	tests := []struct {
 		name      string
-		saFunc    func(s *internaltest.MinioServer) *StorageAttributes
+		saFunc    func(s *internaltest.MinioServer) (*StorageAttributes, *StorageSecrets)
 		expErrMsg string
 	}{
 		{
 			name: "nonServiceAccount",
-			saFunc: func(s *internaltest.MinioServer) *StorageAttributes {
+			saFunc: func(s *internaltest.MinioServer) (*StorageAttributes, *StorageSecrets) {
 				return &StorageAttributes{
-					AccessKeyId:     s.RootUsername,
-					SecretAccessKey: s.RootPassword,
-					EndpointUrl:     s.ApiAddr,
-					UseSSL:          false,
-				}
+						EndpointUrl: s.ApiAddr,
+						UseSSL:      false,
+					}, &StorageSecrets{
+						AccessKeyId:     s.RootUsername,
+						SecretAccessKey: s.RootPassword,
+					}
 			},
 			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
 		},
 		{
 			name: "serviceAccount",
-			saFunc: func(s *internaltest.MinioServer) *StorageAttributes {
+			saFunc: func(s *internaltest.MinioServer) (*StorageAttributes, *StorageSecrets) {
 				return &StorageAttributes{
-					AccessKeyId:     s.ServiceAccountAccessKeyId,
-					SecretAccessKey: s.ServiceAccountSecretAccessKey,
-					EndpointUrl:     s.ApiAddr,
-					UseSSL:          false,
-				}
+						EndpointUrl: s.ApiAddr,
+						UseSSL:      false,
+					}, &StorageSecrets{
+						AccessKeyId:     s.ServiceAccountAccessKeyId,
+						SecretAccessKey: s.ServiceAccountSecretAccessKey,
+					}
 			},
 		},
 	}
@@ -578,7 +608,8 @@ func TestEnsureServiceAccount(t *testing.T) {
 	server := internaltest.NewMinioServer(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ensureServiceAccount(context.Background(), tt.saFunc(server))
+			sa, sec := tt.saFunc(server)
+			err := ensureServiceAccount(context.Background(), sa, sec)
 			if tt.expErrMsg != "" {
 				require.ErrorContains(t, err, tt.expErrMsg)
 				return
