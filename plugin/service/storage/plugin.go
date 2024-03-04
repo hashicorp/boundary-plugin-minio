@@ -41,7 +41,7 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 
 	sa, err := getStorageAttributes(bucket.GetAttributes())
 	if err != nil {
-		return nil, err // getStorageAttributes already returns a "status"-type error.
+		return nil, err
 	}
 
 	sec, err := getStorageSecrets(bucket.GetSecrets())
@@ -165,7 +165,7 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 
 	sa, err := getStorageAttributes(bucket.GetAttributes())
 	if err != nil {
-		return nil, err // getStorageAttributes already returns a "status"-type error.
+		return nil, err
 	}
 
 	sec, err := getStorageSecrets(bucket.GetSecrets())
@@ -211,7 +211,7 @@ func (sp *StoragePlugin) HeadObject(ctx context.Context, req *pb.HeadObjectReque
 
 	sa, err := getStorageAttributes(bucket.GetAttributes())
 	if err != nil {
-		return nil, err // getStorageAttributes already returns a "status"-type error.
+		return nil, err
 	}
 
 	sec, err := getStorageSecrets(bucket.GetSecrets())
