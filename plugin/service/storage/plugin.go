@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -26,6 +27,10 @@ import (
 )
 
 var _ pb.StoragePluginServiceServer = (*StoragePlugin)(nil)
+
+const (
+	defaultGetObjectChunkSize = uint32(65536)
+)
 
 // StoragePlugin implements the StoragePluginServiceServer interface for the
 // MinIO storage service plugin.
@@ -246,7 +251,71 @@ func (sp *StoragePlugin) HeadObject(ctx context.Context, req *pb.HeadObjectReque
 
 // GetObject is a hook that retrieves objects.
 func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.StoragePluginService_GetObjectServer) error {
-	return fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	if req.GetKey() == "" {
+		return status.Error(codes.InvalidArgument, "object key is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes())
+	if err != nil {
+		return err
+	}
+
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return err
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+	}
+
+	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
+	obj, err := cl.GetObject(objServer.Context(), bucket.GetBucketName(), objKey, minio.GetObjectOptions{})
+	if err != nil {
+		return status.Errorf(codes.Unknown, "failed to get object: %v", err)
+	}
+	defer obj.Close()
+
+	chunkSize := req.GetChunkSize()
+	if chunkSize == 0 {
+		chunkSize = defaultGetObjectChunkSize
+	}
+
+	rd := bufio.NewReader(obj)
+	for {
+		select {
+		case <-objServer.Context().Done():
+			return status.Errorf(codes.Canceled, "server context done while streaming: %v", objServer.Context().Err())
+		default:
+			buffer := make([]byte, chunkSize)
+			n, err := rd.Read(buffer)
+			if err != nil && err != io.EOF {
+				return status.Errorf(codes.Unknown, "failed to read chunk from minio object: %v", err)
+			}
+			if n > 0 {
+				err := objServer.Send(&pb.GetObjectResponse{FileChunk: buffer[:n]})
+				if err != nil {
+					return status.Errorf(codes.Unknown, "failed to send chunk to client: %v", err)
+				}
+			}
+			if err == io.EOF {
+				return nil
+			}
+		}
+	}
 }
 
 // PutObject is a hook that reads a file stored on local disk and stores it to

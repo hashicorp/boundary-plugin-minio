@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"testing"
@@ -18,11 +19,13 @@ import (
 	internaltest "github.com/hashicorp/boundary-plugin-minio/internal/testing"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	"github.com/hashicorp/boundary/sdk/pbs/plugin"
+	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -124,6 +127,57 @@ var (
 		"Version": "2012-10-17"
 	}`)
 )
+
+type getObjectServerMock struct {
+	grpc.ServerStream
+	ctx           context.Context
+	sendErr       error
+	clientCtxDone bool
+	chunks        []*pb.GetObjectResponse
+}
+
+// Context returns the object server's context.
+func (s *getObjectServerMock) Context() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+// Send streams a response message to the client.
+func (g *getObjectServerMock) Send(rsp *pb.GetObjectResponse) error {
+	if g.sendErr != nil {
+		return g.sendErr
+	}
+	if rsp == nil {
+		return fmt.Errorf("getobject stream mock: nil response")
+	}
+	if g.chunks == nil {
+		g.chunks = []*pb.GetObjectResponse{}
+	}
+	g.chunks = append(g.chunks, rsp)
+	if g.clientCtxDone {
+		ctx, cancel := context.WithCancel(g.ctx)
+		g.ctx = ctx
+		cancel()
+	}
+	return nil
+}
+
+// Recv streams a response message from the server.
+func (g *getObjectServerMock) Recv() (*pb.GetObjectResponse, error) {
+	if g.chunks == nil {
+		return nil, fmt.Errorf("getobject stream mock: nil chunks")
+	}
+	if len(g.chunks) == 0 {
+		return nil, io.EOF
+	}
+
+	// Pop a chunk off and return it.
+	chunk := g.chunks[0]
+	g.chunks = g.chunks[1:]
+	return chunk, nil
+}
 
 func TestOnCreateStorageBucket(t *testing.T) {
 	ctx := context.Background()
@@ -993,7 +1047,398 @@ func TestHeadObject(t *testing.T) {
 	}
 }
 
-func TestGetObject(t *testing.T) {}
+func TestGetObject(t *testing.T) {
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+
+	bucketName := "test-bucket"
+	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		in          func(t *testing.T) (*plugin.GetObjectRequest, []byte)
+		mockSendErr error
+		mockCtxDone bool
+		expErrMsg   string
+		expErrCode  codes.Code
+	}{
+		{
+			name: "nilBucket",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{Bucket: nil}, []byte{}
+			},
+			expErrMsg:  "no storage bucket information found",
+			expErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "noBucketName",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{BucketName: ""},
+				}, []byte{}
+			},
+			expErrMsg:  "storage bucket name is required",
+			expErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyObjectKey",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+					},
+					Key: "",
+				}, []byte{}
+			},
+			expErrMsg:  "object key is required",
+			expErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageAttributes",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+					},
+					Key: "object-name",
+				}, []byte{}
+			},
+			expErrMsg:  "empty attributes input",
+			expErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageSecrets",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://foo"),
+							},
+						},
+					},
+					Key: "object-name",
+				}, []byte{}
+			},
+			expErrMsg:  "empty secrets input",
+			expErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "getObjectErr",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: "invalid..bucket..name",
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://localhost:1"),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue("foo"),
+								ConstSecretAccessKey: structpb.NewStringValue("bar"),
+							},
+						},
+					},
+					Key: "object-name",
+				}, []byte{}
+			},
+			expErrMsg:  "failed to get object: Bucket name contains invalid characters",
+			expErrCode: codes.Unknown,
+		},
+		{
+			name: "readObjectErr",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://localhost:1"),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue("foo"),
+								ConstSecretAccessKey: structpb.NewStringValue("bar"),
+							},
+						},
+					},
+					Key: "object-name",
+				}, []byte{}
+			},
+			expErrMsg:  "failed to read chunk from minio object",
+			expErrCode: codes.Unknown,
+		},
+		{
+			name: "objectDoesntExist",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key: "object-name",
+				}, []byte{}
+			},
+			expErrMsg:  "failed to read chunk from minio object: The specified key does not exist.",
+			expErrCode: codes.Unknown,
+		},
+		{
+			name: "objServerSendErr",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+				rd := bytes.NewReader([]byte("test"))
+				_, err := server.Client.PutObject(ctx, bucketName, objName, rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key: objName,
+				}, []byte{}
+			},
+			mockSendErr: fmt.Errorf("oops error"),
+			expErrMsg:   "failed to send chunk to client: oops error",
+			expErrCode:  codes.Unknown,
+		},
+		{
+			name: "contextCancellation",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+
+				data := []byte{}
+				for i := 0; i < 8192; i += len(objName) {
+					data = append(data, []byte(objName)...)
+				}
+				rd := bytes.NewReader(data)
+				_, err := server.Client.PutObject(ctx, bucketName, objName, rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key:       objName,
+					ChunkSize: 2048,
+				}, data
+			},
+			mockCtxDone: true,
+			expErrMsg:   "server context done while streaming: context canceled",
+			expErrCode:  codes.Canceled,
+		},
+		{
+			name: "successSingleChunk",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+
+				data := []byte{}
+				for i := 0; i < 8192; i += len(objName) {
+					data = append(data, []byte(objName)...)
+				}
+				rd := bytes.NewReader(data)
+				_, err := server.Client.PutObject(ctx, bucketName, objName, rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key:       objName,
+					ChunkSize: 16384,
+				}, data
+			},
+		},
+		{
+			name: "successCustomPrefix",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+
+				data := []byte{}
+				for i := 0; i < 8192; i += len(objName) {
+					data = append(data, []byte(objName)...)
+				}
+				rd := bytes.NewReader(data)
+
+				prefix := "prefix"
+				_, err := server.Client.PutObject(ctx, bucketName, path.Join(prefix, objName), rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName:   bucketName,
+						BucketPrefix: prefix,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key: objName,
+				}, data
+			},
+		},
+		{
+			name: "successMultipleChunksDefaultChunkSize",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+
+				data := []byte{}
+				for i := 0; i < 102_400; i += len(objName) {
+					data = append(data, []byte(objName)...)
+				}
+				rd := bytes.NewReader(data)
+				_, err := server.Client.PutObject(ctx, bucketName, objName, rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key: objName,
+				}, data
+			},
+		},
+		{
+			name: "successMultipleChunksCustomChunkSize",
+			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
+				objName := uuid.New().String()
+
+				data := []byte{}
+				for i := 0; i < 10_420; i += len(objName) {
+					data = append(data, []byte(objName)...)
+				}
+				rd := bytes.NewReader(data)
+				_, err := server.Client.PutObject(ctx, bucketName, objName, rd, rd.Size(), minio.PutObjectOptions{})
+				require.NoError(t, err)
+
+				return &pb.GetObjectRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+							},
+						},
+					},
+					Key:       objName,
+					ChunkSize: 4096,
+				}, data
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objServer := &getObjectServerMock{
+				ctx:           ctx,
+				clientCtxDone: tt.mockCtxDone,
+				sendErr:       tt.mockSendErr,
+			}
+
+			req, expFileBytes := tt.in(t)
+			sp := new(StoragePlugin)
+			err := sp.GetObject(req, objServer)
+			if tt.expErrMsg != "" {
+				require.ErrorContains(t, err, tt.expErrMsg)
+				require.Equal(t, tt.expErrCode.String(), status.Code(err).String())
+				return
+			}
+			require.NoError(t, err)
+
+			expChunkSize := defaultGetObjectChunkSize
+			if req.ChunkSize > 0 {
+				expChunkSize = req.ChunkSize
+			}
+
+			bb := bytes.NewBuffer([]byte{})
+			for {
+				rsp, err := objServer.Recv()
+				if err == io.EOF {
+					break
+				}
+				require.NoError(t, err)
+				require.LessOrEqual(t, uint32(len(rsp.GetFileChunk())), expChunkSize)
+
+				n, err := bb.Write(rsp.GetFileChunk())
+				require.NoError(t, err)
+				require.EqualValues(t, len(rsp.GetFileChunk()), n)
+			}
+
+			require.Equal(t, expFileBytes, bb.Bytes())
+		})
+	}
+}
 
 func TestPutObject(t *testing.T) {
 	td := t.TempDir()
