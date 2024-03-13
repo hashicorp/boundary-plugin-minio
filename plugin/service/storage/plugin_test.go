@@ -4,9 +4,12 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"os"
 	"path"
 	"testing"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -991,7 +995,285 @@ func TestHeadObject(t *testing.T) {
 
 func TestGetObject(t *testing.T) {}
 
-func TestPutObject(t *testing.T) {}
+func TestPutObject(t *testing.T) {
+	td := t.TempDir()
+
+	dirPath := func(p string) string {
+		return path.Join(td, p)
+	}
+
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+
+	bucketName := "test-bucket"
+	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
+
+	cases := []struct {
+		name    string
+		req     *plugin.PutObjectRequest
+		setup   func(*plugin.PutObjectRequest) (string, error)
+		err     string
+		errCode codes.Code
+	}{
+		{
+			name:    "nilRequest",
+			err:     "no storage bucket information found",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name:    "nilBucket",
+			req:     &plugin.PutObjectRequest{Bucket: nil},
+			err:     "no storage bucket information found",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyBucket",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{},
+			},
+			err:     "storage bucket name is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyObjectKey",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+				},
+				Key: "",
+			},
+			err:     "object key is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyFilePath",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+				},
+				Key:  "test-key",
+				Path: "",
+			},
+			err:     "path is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageAttributes",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				Key:  "object-key",
+				Path: "file-path",
+			},
+			err:     "attributes.endpoint_url.format: unknown protocol, should be http:// or https://",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageSecrets",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("http://foo"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"access_key_id": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				Key:  "object-key",
+				Path: "file-path",
+			},
+			err:     "secrets.secret_access_key: missing required value \"secret_access_key\"",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyFile",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key:  "test-key",
+				Path: dirPath("empty-test-file"),
+			},
+			setup: func(req *plugin.PutObjectRequest) (string, error) {
+				file, err := os.Create(req.Path)
+				if err != nil {
+					return "", err
+				}
+				file.Close()
+				return "", nil
+			},
+			err:     "file is empty",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "pathIsDir",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key:  "test-key",
+				Path: td,
+			},
+			err:     "path is not a file",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "success",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key:  "test-key",
+				Path: dirPath("test-file"),
+			},
+			setup: func(req *plugin.PutObjectRequest) (string, error) {
+				file, err := os.Create(req.Path)
+				if err != nil {
+					return "", err
+				}
+				defer file.Close()
+
+				data := "test file data"
+
+				if _, err = file.WriteString(data); err != nil {
+					return "", err
+				}
+				return data, nil
+			},
+		},
+		{
+			name: "successWithBucketPrefix",
+			req: &plugin.PutObjectRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName:   bucketName,
+					BucketPrefix: "test-prefix",
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				Key:  "test-key-with-prefix",
+				Path: dirPath("test-file-with-prefix"),
+			},
+			setup: func(req *plugin.PutObjectRequest) (string, error) {
+				file, err := os.Create(req.Path)
+				if err != nil {
+					return "", err
+				}
+				defer file.Close()
+
+				data := "test file data for bucket with prefix"
+
+				if _, err = file.WriteString(data); err != nil {
+					return "", err
+				}
+				return data, nil
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			assert, require := assert.New(t), require.New(t)
+			var checksum []byte
+			var content string
+			if tt.setup != nil {
+				var err error
+				content, err = tt.setup(tt.req)
+				require.NoError(err)
+				hash := sha256.New()
+				_, err = hash.Write([]byte(content))
+				require.NoError(err)
+				checksum = hash.Sum(nil)
+				require.NoError(err)
+			}
+
+			sp := new(StoragePlugin)
+			res, err := sp.PutObject(ctx, tt.req)
+
+			if tt.err != "" {
+				assert.ErrorContains(err, tt.err)
+				assert.Equal(tt.errCode.String(), status.Code(err).String())
+				return
+			}
+
+			require.NotNil(res)
+			assert.NotEmpty(res.GetChecksumSha_256())
+			assert.Equal(checksum, res.ChecksumSha_256)
+
+			// check the actual file content is the same
+			cl, err := minio.New(server.ApiAddr, &minio.Options{
+				Creds:  credentials.NewStaticV4(server.RootUsername, server.RootPassword, ""),
+				Secure: false,
+			})
+			require.NoError(err)
+			obj, err := cl.GetObject(ctx, bucketName, path.Join(tt.req.Bucket.GetBucketPrefix(), tt.req.GetKey()), minio.GetObjectOptions{})
+			require.NoError(err)
+			defer obj.Close()
+
+			contentLen := len([]byte(content))
+			reader := bufio.NewReader(obj)
+			buffer := make([]byte, contentLen)
+			n, err := reader.Read(buffer)
+			require.NoError(err)
+
+			assert.Equal(contentLen, n)
+			assert.Equal(content, string(buffer))
+		})
+	}
+}
 
 func TestDeleteObjects(t *testing.T) {}
 
