@@ -6,7 +6,11 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"io"
+	"os"
 	"path"
 
 	"github.com/google/uuid"
@@ -248,7 +252,90 @@ func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.Storag
 // PutObject is a hook that reads a file stored on local disk and stores it to
 // an external object store.
 func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest) (*pb.PutObjectResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+	if req.GetKey() == "" {
+		return nil, status.Error(codes.InvalidArgument, "object key is required")
+	}
+	if req.GetPath() == "" {
+		return nil, status.Error(codes.InvalidArgument, "path is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := os.Open(req.GetPath())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to read file info: %v", err)
+	}
+	if info.IsDir() {
+		return nil, status.Error(codes.InvalidArgument, "path is not a file")
+	}
+	if info.Size() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "file is empty")
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create minio sdk client: %v", err)
+	}
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to calculate hash: %v", err)
+	}
+	checksum := base64.StdEncoding.EncodeToString(hash.Sum(nil))
+
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to rewind file pointer: %v", err)
+	}
+
+	key := path.Join(bucket.GetBucketPrefix(), req.GetKey())
+	res, err := cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{
+		UserMetadata: map[string]string{
+			"x-amz-checksum-algorithm": "SHA256",
+			"x-amz-checksum-sha256":    checksum,
+		},
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to put object into minio: %v", err)
+	}
+
+	if res.ChecksumSHA256 == "" {
+		return nil, status.Error(codes.Internal, "missing checksum response from minio")
+	}
+	if checksum != res.ChecksumSHA256 {
+		return nil, status.Error(codes.Internal, "mismatched checksum")
+	}
+	decodedChecksum, err := base64.StdEncoding.DecodeString(res.ChecksumSHA256)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to decode checksum value from minio: %v", err)
+	}
+	return &pb.PutObjectResponse{
+		ChecksumSha_256: decodedChecksum,
+	}, nil
 }
 
 // DeleteObjects deletes one or many files in an external object store via a
