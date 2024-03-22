@@ -21,13 +21,13 @@ func TestRotateCredentials(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		ss         *StorageSecrets
+		inSec      *StorageSecrets
 		expErrMsg  string
 		credDelErr bool
 	}{
 		{
 			name: "notUsingServiceAccount",
-			ss: &StorageSecrets{
+			inSec: &StorageSecrets{
 				AccessKeyId:     server.RootUsername,
 				SecretAccessKey: server.RootPassword,
 			},
@@ -35,7 +35,7 @@ func TestRotateCredentials(t *testing.T) {
 		},
 		{
 			name: "addServiceAccountFail",
-			ss: func() *StorageSecrets {
+			inSec: func() *StorageSecrets {
 				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
 					Policy: json.RawMessage(`
 					{
@@ -63,7 +63,7 @@ func TestRotateCredentials(t *testing.T) {
 		},
 		{
 			name: "credentialDeletionFail",
-			ss: func() *StorageSecrets {
+			inSec: func() *StorageSecrets {
 				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
 				require.NoError(t, err)
 
@@ -76,7 +76,7 @@ func TestRotateCredentials(t *testing.T) {
 		},
 		{
 			name: "success",
-			ss: func() *StorageSecrets {
+			inSec: func() *StorageSecrets {
 				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
 				require.NoError(t, err)
 
@@ -95,26 +95,26 @@ func TestRotateCredentials(t *testing.T) {
 				UseSSL:      false,
 			}
 
-			ss, delFn, err := rotateCredentials(context.Background(), bucketName, sa, tt.ss)
+			outSec, delFn, err := rotateCredentials(context.Background(), bucketName, sa, tt.inSec)
 			if tt.expErrMsg != "" {
 				require.ErrorContains(t, err, tt.expErrMsg)
-				require.Nil(t, ss)
+				require.Nil(t, outSec)
 				require.Nil(t, delFn)
 				return
 			}
 
 			require.NoError(t, err)
-			require.NotNil(t, ss)
+			require.NotNil(t, outSec)
 			require.NotNil(t, delFn)
-			require.NotEqual(t, ss.AccessKeyId, tt.ss.AccessKeyId)
-			require.NotEqual(t, ss.SecretAccessKey, tt.ss.SecretAccessKey)
-			require.NotEmpty(t, ss.LastRotatedTime)
+			require.NotEqual(t, outSec.AccessKeyId, tt.inSec.AccessKeyId)
+			require.NotEqual(t, outSec.SecretAccessKey, tt.inSec.SecretAccessKey)
+			require.NotEmpty(t, outSec.LastRotatedTime)
 
 			// Ensure old creds still exist since the callback hasn't been
 			// called. We then make the delete call and finally assert that the
 			// credential was removed if there was no error when attempting to
 			// delete.
-			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.ss.AccessKeyId)
+			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
 			require.NoError(t, err)
 
 			if tt.credDelErr {
@@ -122,7 +122,7 @@ func TestRotateCredentials(t *testing.T) {
 				require.ErrorContains(t, delFn(), "failed to delete minio service account")
 				require.ErrorContains(t, delFn(), "failed to delete minio service account") // 2nd call should return the same state (due to sync.Once).
 
-				_, err := server.AdminClient.InfoServiceAccount(ctx, tt.ss.AccessKeyId)
+				_, err := server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
 				require.NoError(t, err)
 				return
 			} else {
@@ -130,7 +130,7 @@ func TestRotateCredentials(t *testing.T) {
 				require.NoError(t, delFn()) // 2nd call should return the same state (due to sync.Once).
 			}
 
-			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.ss.AccessKeyId)
+			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
 			require.ErrorContains(t, err, "service account is not found")
 		})
 	}

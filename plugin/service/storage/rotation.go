@@ -73,9 +73,9 @@ func rotateCredentials(ctx context.Context, bucketName string, sa *StorageAttrib
 		LastRotatedTime: time.Now(),
 	}
 
-	inCl, newCl := inSec.Clone(), newSec.Clone()
+	inCl := inSec.Clone()
 	return newSec, sync.OnceValue(func() error {
-		ac, err := newMadminClient(sa, newCl)
+		ac, err := newMadminClient(sa, inCl)
 		if err != nil {
 			return fmt.Errorf("failed to create minio admin client: %w", err)
 		}
