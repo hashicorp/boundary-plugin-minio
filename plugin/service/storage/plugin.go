@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
@@ -63,6 +64,16 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
 	}
 
+	deleteOldCredsFn := func() error { return nil }
+	if !sa.DisableCredentialRotation {
+		newSec, fn, err := rotateCredentials(ctx, bucket.GetBucketName(), sa, sec)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to rotate minio credentials: %v", err)
+		}
+		sec = newSec
+		deleteOldCredsFn = fn
+	}
+
 	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
 		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
 		Secure: sa.UseSSL,
@@ -81,6 +92,13 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to convert storage attributes to protobuf struct: %v", err)
 	}
+
+	// Given that at this point everything is OK with the bucket, we shouldn't
+	// let a failure to delete the old credentials fail the entire process. If
+	// we ever establish a way to log non-critical errors in the plugin, log
+	// this.
+	_ = deleteOldCredsFn()
+
 	return &pb.OnCreateStorageBucketResponse{
 		Persisted: &storagebuckets.StorageBucketPersisted{Data: persistedData},
 	}, nil
@@ -95,24 +113,22 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 	if newBucket.BucketName == "" {
 		return nil, status.Error(codes.InvalidArgument, "new bucketName is required")
 	}
+
 	oldBucket := req.GetCurrentBucket()
 	if oldBucket == nil {
 		return nil, status.Error(codes.InvalidArgument, "current bucket is required")
 	}
-
-	// current attributes
 	osa, err := getStorageAttributes(oldBucket.GetAttributes())
 	if err != nil {
 		return nil, err
 	}
 
-	// new attributes and secrets
 	nsa, err := getStorageAttributes(newBucket.GetAttributes())
 	if err != nil {
 		return nil, err
 	}
 
-	sec, err := getStorageSecrets(newBucket.GetSecrets())
+	sec, err := getStorageSecrets(req.GetPersisted().GetData())
 	if err != nil {
 		return nil, err
 	}
@@ -128,8 +144,77 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 		return nil, status.Errorf(codes.InvalidArgument, "cannot update attribute EndpointUrl")
 	}
 
-	if err = ensureServiceAccount(ctx, nsa, sec); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %s", err)
+	if nsa.DisableCredentialRotation && newBucket.GetSecrets() == nil {
+		if !sec.LastRotatedTime.IsZero() {
+			return nil, status.Error(codes.InvalidArgument, "cannot disable rotation for already-rotated credentials")
+		}
+	}
+
+	deleteRotatedCredsFn := func() error { return nil }
+	deleteOldPersistedCredsFn := func() error { return nil }
+	if newBucket.GetSecrets() != nil {
+		// Preemptively check if we're managing the current persisted
+		// credentials and schedule them for later deletion if we are, since in
+		// both rotation and non-rotation cases below, we'll be replacing these.
+		if !sec.LastRotatedTime.IsZero() {
+			sc := sec.Clone()
+			deleteOldPersistedCredsFn = sync.OnceValue(func() error {
+				cl, err := newMadminClient(nsa, sc)
+				if err != nil {
+					return fmt.Errorf("failed to create new minio admin client: %w", err)
+				}
+				err = cl.DeleteServiceAccount(ctx, sc.AccessKeyId)
+				if err != nil {
+					return fmt.Errorf("failed to delete minio service account: %w", err)
+				}
+
+				return nil
+			})
+		}
+
+		newSec, err := getStorageSecrets(newBucket.GetSecrets())
+		if err != nil {
+			return nil, err
+		}
+
+		err = ensureServiceAccount(ctx, nsa, newSec)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %s", err)
+		}
+
+		if !nsa.DisableCredentialRotation {
+			// We have new incoming credentials and we're also rotating,
+			// therefore we use incoming credentials to create a new service
+			// account, then delete the incoming credentials. The existing
+			// persisted credentials have already been scheduled for deletion
+			// above (if applicable), so we don't need to do it here.
+			ss, fn, err := rotateCredentials(ctx, newBucket.GetBucketName(), nsa, newSec)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "failed to rotate minio credentials: %v", err)
+			}
+			sec = ss
+			deleteRotatedCredsFn = fn
+		} else {
+			// We have new incoming credentials but we're not rotating. Set them
+			// directly for validation below. The existing persisted credentials
+			// have already been scheduled for deletion above (if applicable),
+			// so we don't need to do it here.
+			sec = newSec
+		}
+	} else {
+		if osa.DisableCredentialRotation && !nsa.DisableCredentialRotation {
+			// Handle the case where the user enables credential rotation but
+			// provides no new credentials. In this case, we use the existing
+			// persisted credentials to generate a new service account. The
+			// persisted credentials are, by definition, not being managed by us
+			// (credential rotation was disabled beforehand), so don't schedule
+			// them for deletion.
+			ss, _, err := rotateCredentials(ctx, newBucket.GetBucketName(), nsa, sec)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "failed to rotate minio credentials: %v", err)
+			}
+			sec = ss
+		}
 	}
 
 	cl, err := minio.New(nsa.EndpointUrl, &minio.Options{
@@ -150,14 +235,46 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 		return nil, status.Errorf(codes.InvalidArgument, "failed to convert storage attributes to protobuf struct: %s", err)
 	}
 
+	// Given that at this point everything is OK with the bucket, we shouldn't
+	// let a failure to delete credentials fail the entire process. If we ever
+	// establish a way to log non-critical errors in the plugin, log this.
+	_ = deleteRotatedCredsFn()
+	_ = deleteOldPersistedCredsFn()
+
 	return &pb.OnUpdateStorageBucketResponse{
 		Persisted: &storagebuckets.StorageBucketPersisted{Data: persisted},
 	}, nil
 }
 
 // OnDeleteStorageBucket is a hook that runs when a storage bucket is deleted.
-// Since this plugin manages no state at the moment, this function is a no-op.
 func (sp *StoragePlugin) OnDeleteStorageBucket(ctx context.Context, req *pb.OnDeleteStorageBucketRequest) (*pb.OnDeleteStorageBucketResponse, error) {
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+
+	sec, err := getStorageSecrets(req.GetPersisted().GetData())
+	if err != nil {
+		return nil, err
+	}
+
+	if !sec.LastRotatedTime.IsZero() {
+		sa, err := getStorageAttributes(bucket.GetAttributes())
+		if err != nil {
+			return nil, err
+		}
+
+		ac, err := newMadminClient(sa, sec)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to create minio admin client: %v", err)
+		}
+
+		err = ac.DeleteServiceAccount(ctx, sec.AccessKeyId)
+		if err != nil {
+			return nil, status.Errorf(codes.Unknown, "failed to delete minio service account: %v", err)
+		}
+	}
+
 	return &pb.OnDeleteStorageBucketResponse{}, nil
 }
 
