@@ -5,6 +5,7 @@ package storage
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -90,17 +91,29 @@ func TestGetStorageAttributes(t *testing.T) {
 			expErrMsg: "attributes.endpoint_url: missing required value \"endpoint_url\"",
 		},
 		{
+			name: "disableCredRotationBadType",
+			inAttributes: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					ConstEndpointUrl:               structpb.NewStringValue("http://bar"),
+					ConstDisableCredentialRotation: structpb.NewStringValue("notbool"),
+				},
+			},
+			expErrMsg: "attributes.disable_credential_rotation: unexpected type for value \"disable_credential_rotation\": want bool, got string",
+		},
+		{
 			name: "successWithNoSSL",
 			inAttributes: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstEndpointUrl: structpb.NewStringValue("http://foo.bar"),
-					ConstRegion:      structpb.NewStringValue("us-east-1"),
+					ConstEndpointUrl:               structpb.NewStringValue("http://foo.bar"),
+					ConstRegion:                    structpb.NewStringValue("us-east-1"),
+					ConstDisableCredentialRotation: structpb.NewBoolValue(true),
 				},
 			},
 			expStorageAttributes: &StorageAttributes{
-				EndpointUrl: "foo.bar",
-				Region:      "us-east-1",
-				UseSSL:      false,
+				EndpointUrl:               "foo.bar",
+				Region:                    "us-east-1",
+				UseSSL:                    false,
+				DisableCredentialRotation: true,
 			},
 		},
 		{
@@ -216,6 +229,17 @@ func TestGetStorageSecrets(t *testing.T) {
 			expErrMsg: "secrets.secret_access_key: unexpected type for value \"secret_access_key\": want string, got bool",
 		},
 		{
+			name: "lastRotatedBadType",
+			inSecrets: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					ConstAccessKeyId:     structpb.NewStringValue("foo"),
+					ConstSecretAccessKey: structpb.NewStringValue("bar"),
+					ConstLastRotatedTime: structpb.NewStringValue("nottime"),
+				},
+			},
+			expErrMsg: "secrets.creds_last_rotated_time: could not parse time in value \"creds_last_rotated_time\"",
+		},
+		{
 			name: "unknownSecret",
 			inSecrets: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
@@ -237,6 +261,21 @@ func TestGetStorageSecrets(t *testing.T) {
 			expStorageSecrets: &StorageSecrets{
 				AccessKeyId:     "foo",
 				SecretAccessKey: "bar",
+			},
+		},
+		{
+			name: "successWithLastRotatedTime",
+			inSecrets: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					ConstAccessKeyId:     structpb.NewStringValue("foo"),
+					ConstSecretAccessKey: structpb.NewStringValue("bar"),
+					ConstLastRotatedTime: structpb.NewStringValue(time.Date(2024, 01, 02, 03, 04, 05, 06, time.UTC).Format(time.RFC3339Nano)),
+				},
+			},
+			expStorageSecrets: &StorageSecrets{
+				AccessKeyId:     "foo",
+				SecretAccessKey: "bar",
+				LastRotatedTime: time.Date(2024, 01, 02, 03, 04, 05, 06, time.UTC),
 			},
 		},
 	}
@@ -268,10 +307,12 @@ func TestStorageSecretsAsMap(t *testing.T) {
 			in: &StorageSecrets{
 				AccessKeyId:     "access_key_id_value",
 				SecretAccessKey: "secret_access_key_value",
+				LastRotatedTime: time.Date(2024, 01, 02, 03, 04, 05, 06, time.UTC),
 			},
 			expMap: map[string]any{
-				"access_key_id":     "access_key_id_value",
-				"secret_access_key": "secret_access_key_value",
+				"access_key_id":           "access_key_id_value",
+				"secret_access_key":       "secret_access_key_value",
+				"creds_last_rotated_time": "2024-01-02T03:04:05.000000006Z",
 			},
 		},
 	}
@@ -282,4 +323,19 @@ func TestStorageSecretsAsMap(t *testing.T) {
 			require.EqualValues(t, tt.expMap, m)
 		})
 	}
+}
+
+func TestTestStorageSecretsClone(t *testing.T) {
+	now := time.Now()
+	in := &StorageSecrets{
+		AccessKeyId:     "foo",
+		SecretAccessKey: "bar",
+		LastRotatedTime: now,
+	}
+
+	secCl := in.Clone()
+	require.Equal(t, in.AccessKeyId, secCl.AccessKeyId)
+	require.Equal(t, in.AccessKeyId, secCl.AccessKeyId)
+	require.Equal(t, in.LastRotatedTime, secCl.LastRotatedTime)
+	require.NotSame(t, in, secCl)
 }

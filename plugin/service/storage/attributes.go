@@ -6,6 +6,7 @@ package storage
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/boundary-plugin-minio/internal/errors"
 	"github.com/hashicorp/boundary-plugin-minio/internal/values"
@@ -15,10 +16,12 @@ import (
 )
 
 const (
-	ConstEndpointUrl     = "endpoint_url"
-	ConstAccessKeyId     = "access_key_id"
-	ConstSecretAccessKey = "secret_access_key"
-	ConstRegion          = "region"
+	ConstEndpointUrl               = "endpoint_url"
+	ConstAccessKeyId               = "access_key_id"
+	ConstSecretAccessKey           = "secret_access_key"
+	ConstRegion                    = "region"
+	ConstDisableCredentialRotation = "disable_credential_rotation"
+	ConstLastRotatedTime           = "creds_last_rotated_time"
 )
 
 type StorageAttributes struct {
@@ -31,6 +34,11 @@ type StorageAttributes struct {
 	// UseSSL determines if the MinIO SDK will use SSL when communicating with
 	// the server. This field is determined based on the endpoint URL prefix.
 	UseSSL bool
+	// DisableCredentialRotation is used to configure whether this plugin should
+	// manage the MinIO credentials or not. By default, this field is set to
+	// false. See the plugin's OnCreateStorageBucket, OnUpdateStorageBucket and
+	// OnDeleteStorageBucket for how we use this.
+	DisableCredentialRotation bool
 }
 
 type StorageSecrets struct {
@@ -40,6 +48,10 @@ type StorageSecrets struct {
 	// SecretAccessKey is the MinIO Secret Access Key. This field is required
 	// and comes from user input.
 	SecretAccessKey string
+	// LastRotatedTime is the time the secrets contained in this object were
+	// last rotated. Will be set to the zero-value (time.Time{}) if the
+	// credentials haven't been rotated.
+	LastRotatedTime time.Time
 }
 
 // AsMap returns a map StorageAttributes's secret fields as a map.
@@ -47,6 +59,17 @@ func (sa *StorageSecrets) AsMap() map[string]any {
 	return map[string]any{
 		ConstAccessKeyId:     sa.AccessKeyId,
 		ConstSecretAccessKey: sa.SecretAccessKey,
+		ConstLastRotatedTime: sa.LastRotatedTime.Format(time.RFC3339Nano),
+	}
+}
+
+// Clone returns a new StorageSecrets object with the same state as the incoming
+// one.
+func (sec *StorageSecrets) Clone() *StorageSecrets {
+	return &StorageSecrets{
+		AccessKeyId:     sec.AccessKeyId,
+		SecretAccessKey: sec.SecretAccessKey,
+		LastRotatedTime: sec.LastRotatedTime,
 	}
 }
 
@@ -83,6 +106,12 @@ func getStorageAttributes(inAttributes *structpb.Struct) (*StorageAttributes, er
 	}
 	delete(unknownAttrFields, ConstRegion)
 
+	disableCredentialRotation, err := values.GetBoolValue(inAttributes, ConstDisableCredentialRotation, false)
+	if err != nil {
+		badFields[fmt.Sprintf("attributes.%s", ConstDisableCredentialRotation)] = err.Error()
+	}
+	delete(unknownAttrFields, ConstDisableCredentialRotation)
+
 	for s := range unknownAttrFields {
 		badFields[fmt.Sprintf("attributes.%s", s)] = "unrecognized field"
 	}
@@ -91,9 +120,10 @@ func getStorageAttributes(inAttributes *structpb.Struct) (*StorageAttributes, er
 		return nil, errors.InvalidArgumentError("invalid or unrecognized attributes found", badFields)
 	}
 	return &StorageAttributes{
-		EndpointUrl: endpointUrl,
-		Region:      region,
-		UseSSL:      useSSL,
+		EndpointUrl:               endpointUrl,
+		Region:                    region,
+		UseSSL:                    useSSL,
+		DisableCredentialRotation: disableCredentialRotation,
 	}, nil
 }
 
@@ -118,6 +148,12 @@ func getStorageSecrets(inSecrets *structpb.Struct) (*StorageSecrets, error) {
 	}
 	delete(unknownSecretFields, ConstSecretAccessKey)
 
+	lastRotated, err := values.GetTimeValue(inSecrets, ConstLastRotatedTime)
+	if err != nil {
+		badFields[fmt.Sprintf("secrets.%s", ConstLastRotatedTime)] = err.Error()
+	}
+	delete(unknownSecretFields, ConstLastRotatedTime)
+
 	for s := range unknownSecretFields {
 		badFields[fmt.Sprintf("secrets.%s", s)] = "unrecognized field"
 	}
@@ -128,5 +164,6 @@ func getStorageSecrets(inSecrets *structpb.Struct) (*StorageSecrets, error) {
 	return &StorageSecrets{
 		AccessKeyId:     accessKeyId,
 		SecretAccessKey: secretAccessKey,
+		LastRotatedTime: lastRotated,
 	}, nil
 }
