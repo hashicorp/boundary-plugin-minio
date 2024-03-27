@@ -5,6 +5,7 @@ package values
 
 import (
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -35,6 +36,52 @@ func GetStringValue(in *structpb.Struct, k string, required bool) (string, error
 	}
 
 	return s, nil
+}
+
+// GetBoolValue returns a boolean value and no error if the given key is found
+// in the provided proto struct input. An error is returned if the key is not
+// found and required is true, or the value type is not a boolean.
+func GetBoolValue(in *structpb.Struct, k string, required bool) (bool, error) {
+	mv := in.GetFields()
+	v, ok := mv[k]
+	if !ok {
+		if required {
+			return false, fmt.Errorf("missing required value %q", k)
+		}
+
+		return false, nil
+	}
+
+	b, ok := v.AsInterface().(bool)
+	if !ok {
+		return false, fmt.Errorf("unexpected type for value %q: want bool, got %T", k, v.AsInterface())
+	}
+
+	return b, nil
+}
+
+// GetTimeValue returns a time.Time object and no error if the given key is
+// found in the provided proto struct input. An error is returned if the value
+// in the struct isn't a string or the value is not parsable by time.Parse. The
+// expected time layout is RFC3339Nano.
+func GetTimeValue(in *structpb.Struct, k string) (time.Time, error) {
+	mv := in.GetFields()
+	v, ok := mv[k]
+	if !ok {
+		return time.Time{}, nil
+	}
+
+	tRaw, ok := v.AsInterface().(string)
+	if !ok {
+		return time.Time{}, fmt.Errorf("unexpected type for value %q: want string, got %T", k, v.AsInterface())
+	}
+
+	t, err := time.Parse(time.RFC3339Nano, tRaw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("could not parse time in value %q: %w", k, err)
+	}
+
+	return t, nil
 }
 
 // StructFields returns a map[string]struct{} of the proto struct input.
