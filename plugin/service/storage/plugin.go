@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
@@ -410,7 +411,84 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 // DeleteObjects deletes one or many files in an external object store via a
 // provided key prefix.
 func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObjectsRequest) (*pb.DeleteObjectsResponse, error) {
-	return nil, fmt.Errorf("unimplemented")
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	if req.GetKeyPrefix() == "" {
+		return nil, status.Error(codes.InvalidArgument, "key prefix is required")
+	}
+
+	sa, err := getStorageAttributes(bucket.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+	}
+
+	prefix := path.Join(bucket.GetBucketPrefix(), req.GetKeyPrefix())
+	if strings.HasSuffix(req.GetKeyPrefix(), "/") {
+		// path.Join ends by "cleaning" the path, including removing a trailing slash, if
+		// it exists. given that a slash is used to denote a folder, it is required here.
+		prefix += "/"
+	}
+
+	if !req.Recursive {
+		if err := cl.RemoveObject(ctx, bucket.GetBucketName(), prefix, minio.RemoveObjectOptions{}); err != nil {
+			return nil, status.Errorf(codes.Unknown, "error deleting minio object: %v", err)
+		}
+		return &pb.DeleteObjectsResponse{
+			ObjectsDeleted: uint32(1),
+		}, nil
+	}
+
+	objects := []minio.ObjectInfo{}
+	for obj := range cl.ListObjects(ctx, bucket.GetBucketName(), minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return nil, status.Errorf(codes.Unknown, "error iterating minio bucket contents: %v", err)
+		}
+		objects = append(objects, obj)
+	}
+
+	emitter := make(chan minio.ObjectInfo)
+	go func() {
+		defer close(emitter)
+		// we could loop the listobjects respose here, but we want to check all the errs ahead of time
+		for _, obj := range objects {
+			emitter <- obj
+		}
+	}()
+
+	removed := 0
+	for res := range cl.RemoveObjectsWithResult(ctx, bucket.GetBucketName(), emitter, minio.RemoveObjectsOptions{}) {
+		if res.Err != nil {
+			return nil, status.Errorf(codes.Unknown, "error deleting minio object(s): %v", err)
+		}
+		removed++
+	}
+
+	return &pb.DeleteObjectsResponse{
+		ObjectsDeleted: uint32(removed),
+	}, nil
 }
 
 func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket) error {

@@ -1720,7 +1720,294 @@ func TestPutObject(t *testing.T) {
 	}
 }
 
-func TestDeleteObjects(t *testing.T) {}
+func TestDeleteObjects(t *testing.T) {
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+	bucketName := "test-bucket"
+	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
+
+	cases := []struct {
+		name     string
+		req      *plugin.DeleteObjectsRequest
+		setup    func(*minio.Client, *plugin.DeleteObjectsRequest) error
+		expected uint32
+		err      string
+		errCode  codes.Code
+	}{
+		{
+			name:    "nilRequest",
+			err:     "no storage bucket information found",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name:    "nilBucket",
+			req:     &plugin.DeleteObjectsRequest{Bucket: nil},
+			err:     "no storage bucket information found",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyBucket",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{},
+			},
+			err:     "storage bucket name is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "emptyObjectKey",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+				},
+				KeyPrefix: "",
+			},
+			err:     "key prefix is required",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageAttributes",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+			},
+			err:     "attributes.endpoint_url.format: unknown protocol, should be http:// or https://",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageSecrets",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"endpoint_url": structpb.NewStringValue("http://foo"),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							"access_key_id": structpb.NewStringValue("foo"),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+			},
+			err:     "secrets.secret_access_key: missing required value \"secret_access_key\"",
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "success",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+			},
+			setup: func(cl *minio.Client, req *plugin.DeleteObjectsRequest) error {
+				contents := "test file contents"
+				file := bytes.NewBufferString(contents)
+				if _, err := cl.PutObject(ctx, bucketName, req.KeyPrefix, file, int64(len(contents)), minio.PutObjectOptions{}); err != nil {
+					return err
+				}
+				return nil
+			},
+			expected: 1,
+		},
+		{
+			name: "successNothingToDelete",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+			},
+			// notice this is still 1, non-recursive always returns 1 on success, even if nothing was *actually* deleted
+			expected: 1,
+		},
+		{
+			name: "successRecursiveOneObjNoSlash",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+				Recursive: true,
+			},
+			setup: func(cl *minio.Client, req *plugin.DeleteObjectsRequest) error {
+				contents := "test file contents"
+				file := bytes.NewBufferString(contents)
+				if _, err := cl.PutObject(ctx, bucketName, req.KeyPrefix, file, int64(len(contents)), minio.PutObjectOptions{}); err != nil {
+					return err
+				}
+				return nil
+			},
+			expected: 1,
+		},
+		{
+			name: "successRecursiveNothingToDelete",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path",
+				Recursive: true,
+			},
+			expected: 0,
+		},
+		{
+			name: "successRecursiveOneObj",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path/",
+				Recursive: true,
+			},
+			setup: func(cl *minio.Client, req *plugin.DeleteObjectsRequest) error {
+				contents := "test file contents"
+				file := bytes.NewBufferString(contents)
+				if _, err := cl.PutObject(ctx, bucketName, req.KeyPrefix+"resr", file, int64(len(contents)), minio.PutObjectOptions{}); err != nil {
+					return err
+				}
+				return nil
+			},
+			expected: 1,
+		},
+		{
+			name: "successRecursiveManyObj",
+			req: &plugin.DeleteObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+				KeyPrefix: "obj/path/",
+				Recursive: true,
+			},
+			setup: func(cl *minio.Client, req *plugin.DeleteObjectsRequest) error {
+				contents := "test file contents"
+				for i := 0; i < 10; i++ {
+					file := bytes.NewBufferString(contents)
+					if _, err := cl.PutObject(ctx, bucketName, req.KeyPrefix+fmt.Sprint(i), file, int64(len(contents)), minio.PutObjectOptions{}); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			expected: 10,
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			assert, require := assert.New(t), require.New(t)
+			cl, err := minio.New(server.ApiAddr, &minio.Options{
+				Creds:  credentials.NewStaticV4(server.RootUsername, server.RootPassword, ""),
+				Secure: false,
+			})
+			require.NoError(err)
+
+			if tt.setup != nil {
+				require.NoError(tt.setup(cl, tt.req))
+			}
+
+			sp := new(StoragePlugin)
+			res, err := sp.DeleteObjects(ctx, tt.req)
+
+			if tt.err != "" {
+				assert.NotNil(status.Convert(err))
+				assert.ErrorContains(err, tt.err)
+				assert.Equal(tt.errCode.String(), status.Code(err).String())
+				return
+			}
+
+			require.NotNil(res)
+			assert.Equal(tt.expected, res.ObjectsDeleted)
+
+			// make sure they were actually deleted on the server
+			obj := 0
+			for range cl.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+				// we don't add the slash back here cause we want to make sure everything is gone
+				Prefix:    path.Join(tt.req.Bucket.GetBucketPrefix(), tt.req.GetKeyPrefix()),
+				Recursive: true,
+			}) {
+				obj++
+			}
+			assert.Equal(0, obj)
+		})
+	}
+}
 
 func TestDryRun(t *testing.T) {
 	ctx := context.Background()
