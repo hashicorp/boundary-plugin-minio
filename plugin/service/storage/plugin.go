@@ -60,11 +60,6 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 		return nil, err
 	}
 
-	err = ensureServiceAccount(ctx, sa, sec)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
-	}
-
 	deleteOldCredsFn := func() error { return nil }
 	if !sa.DisableCredentialRotation {
 		newSec, fn, err := rotateCredentials(ctx, bucket.GetBucketName(), sa, sec)
@@ -178,11 +173,6 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 			return nil, err
 		}
 
-		err = ensureServiceAccount(ctx, nsa, newSec)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %s", err)
-		}
-
 		if !nsa.DisableCredentialRotation {
 			// We have new incoming credentials and we're also rotating,
 			// therefore we use incoming credentials to create a new service
@@ -292,9 +282,13 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 		return nil, err
 	}
 
-	err = ensureServiceAccount(ctx, sa, sec)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
+	if !sec.LastRotatedTime.IsZero() {
+		// since these are existing secrets, we only want to validate the
+		// service account if the credentials have been rotated previously
+		err = ensureServiceAccount(ctx, sa, sec)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to ensure service account: %v", err)
+		}
 	}
 
 	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
