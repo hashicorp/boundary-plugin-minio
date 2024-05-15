@@ -235,26 +235,6 @@ func TestOnCreateStorageBucket(t *testing.T) {
 			expErrMsg: "empty secrets input",
 		},
 		{
-			name: "usingNonServiceAccount",
-			req: &plugin.OnCreateStorageBucketRequest{
-				Bucket: &storagebuckets.StorageBucket{
-					BucketName: bucketName,
-					Attributes: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
-						},
-					},
-					Secrets: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
-							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
-						},
-					},
-				},
-			},
-			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
-		},
-		{
 			name: "dryRunFail",
 			req: &plugin.OnCreateStorageBucketRequest{
 				Bucket: &storagebuckets.StorageBucket{
@@ -322,6 +302,59 @@ func TestOnCreateStorageBucket(t *testing.T) {
 				}
 			}(),
 			expErrMsg: "failed to rotate minio credentials: failed to create new minio service account: Access Denied",
+		},
+		{
+			name: "credRotationFailNoSvcAcct",
+			req: func() *plugin.OnCreateStorageBucketRequest {
+				return &plugin.OnCreateStorageBucketRequest{
+					Bucket: &storagebuckets.StorageBucket{
+						BucketName: bucketName,
+						Attributes: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstEndpointUrl:               structpb.NewStringValue("http://" + server.ApiAddr),
+								ConstDisableCredentialRotation: structpb.NewBoolValue(false),
+							},
+						},
+						Secrets: &structpb.Struct{
+							Fields: map[string]*structpb.Value{
+								ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+								ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+							},
+						},
+					},
+				}
+			}(),
+			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
+		},
+		{
+			name: "successNonServiceAccount",
+			req: &plugin.OnCreateStorageBucketRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl:               structpb.NewStringValue("http://" + server.ApiAddr),
+							ConstDisableCredentialRotation: structpb.NewBoolValue(true),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
+			expRsp: &plugin.OnCreateStorageBucketResponse{
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "successNoRotation",
@@ -765,43 +798,6 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 			errCode: codes.InvalidArgument,
 		},
 		{
-			name: "usingNonServiceAccount",
-			req: &plugin.OnUpdateStorageBucketRequest{
-				NewBucket: &storagebuckets.StorageBucket{
-					BucketName: bucketName,
-					Attributes: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
-						},
-					},
-					Secrets: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
-							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
-						},
-					},
-				},
-				CurrentBucket: &storagebuckets.StorageBucket{
-					BucketName: bucketName,
-					Attributes: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
-						},
-					},
-				},
-				Persisted: &storagebuckets.StorageBucketPersisted{
-					Data: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
-							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
-						},
-					},
-				},
-			},
-			err:     "The specified service account is not found (Specified service account does not exist)",
-			errCode: codes.InvalidArgument,
-		},
-		{
 			name: "dryRunFail",
 			req: &plugin.OnUpdateStorageBucketRequest{
 				NewBucket: &storagebuckets.StorageBucket{
@@ -938,6 +934,52 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 			},
 			err:     "credential rotation enabled with no new credentials provided",
 			errCode: codes.InvalidArgument,
+		},
+		{
+			name: "successUsingNonServiceAccount",
+			req: &plugin.OnUpdateStorageBucketRequest{
+				NewBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl:               structpb.NewStringValue("http://" + server.ApiAddr),
+							ConstDisableCredentialRotation: structpb.NewBoolValue(true),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+				CurrentBucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+				},
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
+			expected: &plugin.OnUpdateStorageBucketResponse{
+				Persisted: &storagebuckets.StorageBucketPersisted{
+					Data: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "successNoRotation",
@@ -1645,26 +1687,6 @@ func TestValidatePermissions(t *testing.T) {
 			expErrMsg: "empty secrets input",
 		},
 		{
-			name: "usingNonServiceAccount",
-			req: &plugin.ValidatePermissionsRequest{
-				Bucket: &storagebuckets.StorageBucket{
-					BucketName: bucketName,
-					Attributes: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
-						},
-					},
-					Secrets: &structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
-							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
-						},
-					},
-				},
-			},
-			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
-		},
-		{
 			name: "dryRunFail",
 			req: &plugin.ValidatePermissionsRequest{
 				Bucket: &storagebuckets.StorageBucket{
@@ -1690,6 +1712,46 @@ func TestValidatePermissions(t *testing.T) {
 				},
 			},
 			expErrMsg: "failed to verify provided minio environment: failed to put object",
+		},
+		{
+			name: "rotatedNonServiceAccount",
+			req: &plugin.ValidatePermissionsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+							ConstLastRotatedTime: structpb.NewStringValue(time.Now().Format(time.RFC3339Nano)),
+						},
+					},
+				},
+			},
+			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
+		},
+		{
+			name: "successNonServiceAccount",
+			req: &plugin.ValidatePermissionsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.RootUsername),
+							ConstSecretAccessKey: structpb.NewStringValue(server.RootPassword),
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "success",
