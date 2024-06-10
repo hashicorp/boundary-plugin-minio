@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
+	"github.com/hashicorp/go-multierror"
 	madmin "github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -79,9 +80,15 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
 	}
 
-	err = dryRun(ctx, cl, bucket)
-	if err != nil {
-		return nil, status.Errorf(codes.Unknown, "failed to verify provided minio environment: %v", err)
+	p, dryRunErr := dryRun(ctx, cl, bucket)
+	if dryRunErr.Len() > 0 {
+		st := status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+
+		st, err = st.WithDetails(p)
+		if err != nil {
+			st = status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+		}
+		return nil, st.Err()
 	}
 
 	persistedData, err := structpb.NewStruct(sec.AsMap())
@@ -209,8 +216,16 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 		return nil, status.Errorf(codes.InvalidArgument, "failed to create minio sdk client: %s", err)
 	}
 
-	if err = dryRun(ctx, cl, newBucket); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to verify provided minio environment: %s", err)
+	if p, dryRunErr := dryRun(ctx, cl, newBucket); dryRunErr != nil {
+		if dryRunErr.Len() > 0 {
+			st := status.New(codes.InvalidArgument, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+
+			st, err = st.WithDetails(p)
+			if err != nil {
+				st = status.New(codes.InvalidArgument, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+			}
+			return nil, st.Err()
+		}
 	}
 
 	persisted, err := structpb.NewStruct(sec.AsMap())
@@ -300,9 +315,15 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
 	}
 
-	err = dryRun(ctx, cl, bucket)
-	if err != nil {
-		return nil, status.Errorf(codes.Unknown, "failed to verify provided minio environment: %v", err)
+	p, dryRunErr := dryRun(ctx, cl, bucket)
+	if dryRunErr.Unwrap() != nil {
+		st := status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+
+		st, err = st.WithDetails(p)
+		if err != nil {
+			st = status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+		}
+		return nil, st.Err()
 	}
 
 	return &pb.ValidatePermissionsResponse{}, nil
@@ -338,13 +359,13 @@ func (sp *StoragePlugin) HeadObject(ctx context.Context, req *pb.HeadObjectReque
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err).Err()
 	}
 
 	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
 	oi, err := cl.StatObject(ctx, bucket.GetBucketName(), objKey, minio.StatObjectOptions{})
 	if err != nil {
-		return nil, status.Errorf(codes.Unknown, "failed to stat object: %v", err)
+		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to stat object: %v", err), err).Err()
 	}
 
 	return &pb.HeadObjectResponse{
@@ -383,13 +404,13 @@ func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.Storag
 		Region: sa.Region,
 	})
 	if err != nil {
-		return status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+		return errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err).Err()
 	}
 
 	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
 	obj, err := cl.GetObject(objServer.Context(), bucket.GetBucketName(), objKey, minio.GetObjectOptions{})
 	if err != nil {
-		return status.Errorf(codes.Unknown, "failed to get object: %v", err)
+		return errorToStatus(codes.Unknown, fmt.Sprintf("failed to get object: %v", err), err).Err()
 	}
 	defer obj.Close()
 
@@ -472,7 +493,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create minio sdk client: %v", err)
+		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to create minio sdk client: %v", err), err).Err()
 	}
 
 	hash := sha256.New()
@@ -493,7 +514,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 		},
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to put object into minio: %v", err)
+		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to put object into minio: %v", err), err).Err()
 	}
 
 	resChecksum := res.ChecksumSHA256
@@ -547,7 +568,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Unknown, "failed to create minio sdk client: %v", err)
+		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err).Err()
 	}
 
 	prefix := path.Join(bucket.GetBucketPrefix(), req.GetKeyPrefix())
@@ -559,7 +580,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 
 	if !req.Recursive {
 		if err := cl.RemoveObject(ctx, bucket.GetBucketName(), prefix, minio.RemoveObjectOptions{}); err != nil {
-			return nil, status.Errorf(codes.Unknown, "error deleting minio object: %v", err)
+			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error deleting minio object: %v", err), err).Err()
 		}
 		return &pb.DeleteObjectsResponse{
 			ObjectsDeleted: uint32(1),
@@ -572,7 +593,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 		Recursive: true,
 	}) {
 		if obj.Err != nil {
-			return nil, status.Errorf(codes.Unknown, "error iterating minio bucket contents: %v", err)
+			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error iterating minio bucket contents: %v", obj.Err), obj.Err).Err()
 		}
 		objects = append(objects, obj)
 	}
@@ -589,7 +610,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 	removed := 0
 	for res := range cl.RemoveObjectsWithResult(ctx, bucket.GetBucketName(), emitter, minio.RemoveObjectsOptions{}) {
 		if res.Err != nil {
-			return nil, status.Errorf(codes.Unknown, "error deleting minio object(s): %v", err)
+			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error deleting minio object(s): %v", res.Err), res.Err).Err()
 		}
 		removed++
 	}
@@ -599,37 +620,145 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 	}, nil
 }
 
-func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket) error {
-	objectKey := path.Join(bucket.GetBucketPrefix(), uuid.New().String())
+// validateWritePermission checks if the plugin has write permission for an object.
+func validateWritePermission(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket, objectKey string) (*pb.Permission, *multierror.Error) {
+	const op = "storage.validateWritePermission"
+	var combinedErrors *multierror.Error
+
+	if cl == nil {
+		err := fmt.Errorf("%s: minio client is nil", op)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, multierror.Append(combinedErrors, err)
+	}
+	if bucket == nil {
+		err := fmt.Errorf("%s: storage bucket is nil", op)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, multierror.Append(combinedErrors, err)
+	}
+
 	rd := bytes.NewReader([]byte("hashicorp boundary minio plugin access test"))
 	_, err := cl.PutObject(ctx, bucket.GetBucketName(), objectKey, rd, rd.Size(), minio.PutObjectOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to put object at %q: %w", objectKey, err)
+		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to put object at %q: %w", objectKey, err))
+		return errorToPermission(err), combinedErrors
 	}
 
-	_, err = cl.StatObject(ctx, bucket.GetBucketName(), objectKey, minio.StatObjectOptions{})
+	return &pb.Permission{State: pb.StateType_STATE_TYPE_OK, CheckedAt: timestamppb.Now()}, nil
+}
+
+// validateReadPermission checks if the plugin has read permission for an object.
+func validateReadPermission(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket, objectKey string) (*pb.Permission, *multierror.Error) {
+	const op = "storage.validateReadPermission"
+	var combinedErrors *multierror.Error
+
+	if cl == nil {
+		err := fmt.Errorf("%s: minio client is nil", op)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, multierror.Append(combinedErrors, err)
+	}
+	if bucket == nil {
+		err := fmt.Errorf("%s: storage bucket is nil", op)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, multierror.Append(combinedErrors, err)
+	}
+	if objectKey == "" {
+		err := fmt.Errorf("%s: object key is empty", op)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, multierror.Append(combinedErrors, err)
+	}
+
+	permission := &pb.Permission{State: pb.StateType_STATE_TYPE_OK}
+	_, err := cl.StatObject(ctx, bucket.GetBucketName(), objectKey, minio.StatObjectOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to stat object at %q: %w", objectKey, err)
+		permission = errorToPermission(err)
+		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to stat object at %q: %w", objectKey, err))
 	}
 
 	_, err = cl.GetObject(ctx, bucket.GetBucketName(), objectKey, minio.GetObjectOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get object at %q: %w", objectKey, err)
+		p := errorToPermission(err)
+		if permission.GetState() == pb.StateType_STATE_TYPE_OK {
+			permission = p
+		} else {
+			if p != nil && p.GetErrorDetails() != "" {
+				permission.ErrorDetails = fmt.Sprintf("%s, %s", permission.GetErrorDetails(), p.GetErrorDetails())
+			}
+		}
+		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to get object at %q: %w", objectKey, err))
 	}
 
 	oiCh := cl.ListObjects(ctx, bucket.GetBucketName(), minio.ListObjectsOptions{Recursive: true})
 	for oi := range oiCh {
 		if oi.Err != nil {
-			return fmt.Errorf("failed to list objects in bucket %q: %w", bucket.GetBucketName(), oi.Err)
+			if permission.GetState() == pb.StateType_STATE_TYPE_OK {
+				permission = errorToPermission(oi.Err)
+			} else {
+				p := errorToPermission(err)
+				if p != nil && p.GetErrorDetails() != "" {
+					permission.ErrorDetails = fmt.Sprintf("%s, %s", permission.GetErrorDetails(), p.GetErrorDetails())
+				}
+			}
+			combinedErrors = multierror.Append(fmt.Errorf("failed to list objects in bucket %q: %w", bucket.GetBucketName(), oi.Err))
 		}
 	}
 
-	err = cl.RemoveObject(ctx, bucket.GetBucketName(), objectKey, minio.RemoveObjectOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to remove object at %q: %w", objectKey, err)
+	if combinedErrors != nil {
+		return permission, combinedErrors
 	}
 
-	return nil
+	permission.CheckedAt = timestamppb.Now()
+	return permission, nil
+}
+
+// validateDeletePermission checks if the plugin has delete permission for an object.
+func validateDeletePermission(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket, objectKey string) (*pb.Permission, *multierror.Error) {
+	const op = "storage.validateDeletePermission"
+
+	var combinedErrors *multierror.Error
+
+	if cl == nil {
+		err := fmt.Errorf("%s: minio client is nil", op)
+		combinedErrors = multierror.Append(combinedErrors, err)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, combinedErrors
+	}
+	if bucket == nil {
+		err := fmt.Errorf("%s: storage bucket is nil", op)
+		combinedErrors = multierror.Append(combinedErrors, err)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, combinedErrors
+	}
+	if objectKey == "" {
+		err := fmt.Errorf("%s: object key is empty", op)
+		combinedErrors = multierror.Append(combinedErrors, err)
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: err.Error(), CheckedAt: timestamppb.Now()}, combinedErrors
+	}
+
+	err := cl.RemoveObject(ctx, bucket.GetBucketName(), objectKey, minio.RemoveObjectOptions{})
+	if err != nil {
+		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to remove object at %q: %w", objectKey, err))
+		return errorToPermission(err), combinedErrors
+	}
+
+	return &pb.Permission{State: pb.StateType_STATE_TYPE_OK, CheckedAt: timestamppb.Now()}, nil
+}
+
+func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.StorageBucket) (*pb.Permissions, *multierror.Error) {
+	objectKey := path.Join(bucket.GetBucketPrefix(), uuid.New().String())
+	permissions := &pb.Permissions{
+		Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, CheckedAt: timestamppb.Now()},
+		Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, CheckedAt: timestamppb.Now()},
+		Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, CheckedAt: timestamppb.Now()},
+	}
+
+	var combinedErrors *multierror.Error
+
+	writePermission, writeErr := validateWritePermission(ctx, cl, bucket, objectKey)
+	combinedErrors = multierror.Append(combinedErrors, writeErr)
+	permissions.Write = writePermission
+
+	readPermission, readErr := validateReadPermission(ctx, cl, bucket, objectKey)
+	combinedErrors = multierror.Append(combinedErrors, readErr)
+	permissions.Read = readPermission
+
+	deletePermission, deleteErr := validateDeletePermission(ctx, cl, bucket, objectKey)
+	combinedErrors = multierror.Append(combinedErrors, deleteErr)
+	permissions.Delete = deletePermission
+
+	return permissions, combinedErrors
 }
 
 func newMadminClient(sa *StorageAttributes, sec *StorageSecrets) (*madmin.AdminClient, error) {
@@ -653,4 +782,52 @@ func ensureServiceAccount(ctx context.Context, sa *StorageAttributes, sec *Stora
 	}
 
 	return nil
+}
+
+// errorToPermission converts a MinIO error to a plugin permission.
+// errorToPermission only handles a subset of MinIO errors that have to do with
+// permissions.
+// If the MinIO error is not recognized, it returns a permission with an unknown state.
+func errorToPermission(err error) *pb.Permission {
+	if err == nil {
+		return &pb.Permission{}
+	}
+
+	errResponse := minio.ToErrorResponse(err)
+	switch errResponse.Code {
+	case "AccessDenied":
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: errResponse.Error(), CheckedAt: timestamppb.Now()}
+	case "InvalidAccessKeyId":
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: errResponse.Error(), CheckedAt: timestamppb.Now()}
+	case "NoSuchBucket":
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: errResponse.Error(), CheckedAt: timestamppb.Now()}
+	case "InvalidObjectState":
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: errResponse.Error(), CheckedAt: timestamppb.Now()}
+	default:
+		return &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: errResponse.Error(), CheckedAt: timestamppb.Now()}
+	}
+}
+
+// errorToStatus converts an error to a gRPC status with the plugin permission
+// attached.
+// errorToStatus only handles a subset of MinIO errors that have to do with
+// permissions.
+// If the permission error is not recognized, a gRPC status will be returned
+// with an code and error message passed in.
+func errorToStatus(code codes.Code, msg string, err error) *status.Status {
+	st := status.New(code, msg)
+
+	if err == nil {
+		return st
+	}
+
+	permission := errorToPermission(err)
+	if permission.GetState() != pb.StateType_STATE_TYPE_UNKNOWN {
+		st, err := st.WithDetails(permission)
+		if err != nil {
+			st = status.New(code, msg)
+		}
+		return st
+	}
+	return st
 }
