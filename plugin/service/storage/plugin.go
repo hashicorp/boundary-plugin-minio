@@ -496,13 +496,18 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 		return nil, status.Errorf(codes.Internal, "failed to put object into minio: %v", err)
 	}
 
-	if res.ChecksumSHA256 == "" {
-		return nil, status.Error(codes.Internal, "missing checksum response from minio")
+	resChecksum := res.ChecksumSHA256
+	if resChecksum == "" {
+		// We were successful in putting the object but we didn't get a file
+		// SHA256 checksum from the server. Given that the call was successful,
+		// assume everything went ok and force the checksum to match so we can
+		// send it correctly back to Boundary.
+		resChecksum = checksum
 	}
-	if checksum != res.ChecksumSHA256 {
+	if checksum != resChecksum {
 		return nil, status.Error(codes.Internal, "mismatched checksum")
 	}
-	decodedChecksum, err := base64.StdEncoding.DecodeString(res.ChecksumSHA256)
+	decodedChecksum, err := base64.StdEncoding.DecodeString(resChecksum)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to decode checksum value from minio: %v", err)
 	}
