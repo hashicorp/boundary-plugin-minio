@@ -82,7 +82,7 @@ func (sp *StoragePlugin) OnCreateStorageBucket(ctx context.Context, req *pb.OnCr
 
 	p, dryRunErr := dryRun(ctx, cl, bucket)
 	if dryRunErr.Len() > 0 {
-		st := status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+		st := status.New(codes.InvalidArgument, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
 
 		st, err = st.WithDetails(&pb.StorageBucketCredentialState{State: p})
 		if err != nil {
@@ -317,7 +317,7 @@ func (sp *StoragePlugin) ValidatePermissions(ctx context.Context, req *pb.Valida
 
 	p, dryRunErr := dryRun(ctx, cl, bucket)
 	if dryRunErr.Unwrap() != nil {
-		st := status.New(codes.Unknown, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
+		st := status.New(codes.FailedPrecondition, fmt.Sprintf("failed to verify provided minio environment: %v", dryRunErr.Unwrap()))
 
 		st, err = st.WithDetails(&pb.StorageBucketCredentialState{State: p})
 		if err != nil {
