@@ -191,11 +191,12 @@ func TestOnCreateStorageBucket(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name            string
-		req             *plugin.OnCreateStorageBucketRequest
-		expRsp          *plugin.OnCreateStorageBucketResponse
-		expCredRotation bool
-		expErrMsg       string
+		name                string
+		req                 *plugin.OnCreateStorageBucketRequest
+		expRsp              *plugin.OnCreateStorageBucketResponse
+		expCredRotation     bool
+		expErrMsg           string
+		expectedPermissions *pb.Permissions
 	}{
 		{
 			name:      "nilBucket",
@@ -261,6 +262,11 @@ func TestOnCreateStorageBucket(t *testing.T) {
 				},
 			},
 			expErrMsg: "failed to verify provided minio environment: failed to put object",
+			expectedPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: "The specified key does not exist."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK, ErrorDetails: ""},
+			},
 		},
 		{
 			name: "credRotationFail",
@@ -430,6 +436,28 @@ func TestOnCreateStorageBucket(t *testing.T) {
 			if tt.expErrMsg != "" {
 				require.ErrorContains(t, err, tt.expErrMsg)
 				require.Nil(t, rsp)
+
+				// Check the permission error.
+				if tt.expectedPermissions != nil {
+					st, ok := status.FromError(err)
+					require.True(t, ok)
+					var permission *pb.StorageBucketCredentialState
+					for _, detail := range st.Details() {
+						if errDetail, ok := detail.(*pb.StorageBucketCredentialState); ok {
+							permission = errDetail
+							break
+						}
+					}
+					require.NotNil(t, permission)
+
+					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetState().GetWrite().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetState().GetRead().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetState().GetDelete().GetState())
+
+					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetState().GetWrite().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetState().GetRead().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetState().GetDelete().GetErrorDetails())
+				}
 				return
 			}
 
@@ -480,11 +508,12 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
 
 	tests := []struct {
-		name     string
-		req      *plugin.OnUpdateStorageBucketRequest
-		expected *plugin.OnUpdateStorageBucketResponse
-		err      string
-		errCode  codes.Code
+		name                string
+		req                 *plugin.OnUpdateStorageBucketRequest
+		expected            *plugin.OnUpdateStorageBucketResponse
+		err                 string
+		expectedPermissions *pb.Permissions
+		errCode             codes.Code
 	}{
 		{
 			name:    "nilNewBucket",
@@ -841,6 +870,11 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 			},
 			err:     "failed to verify provided minio environment: failed to put object",
 			errCode: codes.InvalidArgument,
+			expectedPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: "The specified key does not exist."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK, ErrorDetails: ""},
+			},
 		},
 		{
 			name: "credRotationFailWithNewCreds",
@@ -1038,6 +1072,29 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 				require.ErrorContains(err, tt.err)
 				require.Equal(tt.errCode.String(), status.Code(err).String())
 				require.Nil(res)
+
+				// Check the permission error.
+				if tt.expectedPermissions != nil {
+					st, ok := status.FromError(err)
+					require.True(ok)
+					var permission *pb.StorageBucketCredentialState
+					for _, detail := range st.Details() {
+						if errDetail, ok := detail.(*pb.StorageBucketCredentialState); ok {
+							permission = errDetail
+							break
+						}
+					}
+					require.NotNil(t, permission)
+
+					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetState().GetWrite().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetState().GetRead().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetState().GetDelete().GetState())
+
+					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetState().GetWrite().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetState().GetRead().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetState().GetDelete().GetErrorDetails())
+				}
+
 				return
 			}
 
@@ -1910,7 +1967,7 @@ func TestHeadObject(t *testing.T) {
 				},
 				Key: "doesnt-exist",
 			},
-			expErrMsg: "failed to stat object: The specified key does not exist.",
+			expErrMsg: "specified object does not exist",
 		},
 		{
 			name: "success",
@@ -2944,12 +3001,18 @@ func TestDryRun(t *testing.T) {
 		makeBucketFn func(t *testing.T, cl *minio.Client) string
 		// This test verifies that each message in the err slice is contained in
 		// the error string, effectively &&-ing the checks together.
-		expErrMsgs []string
+		expErrMsgs     []string
+		expPermissions *pb.Permissions
 	}{
 		{
 			name:         "bucketNotExists",
 			makeBucketFn: func(t *testing.T, cl *minio.Client) string { return "unknownbucket" },
 			expErrMsgs:   []string{"The specified bucket does not exist"},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The specified bucket does not exist"},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The specified bucket does not exist"},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The specified bucket does not exist"},
+			},
 		},
 		{
 			name: "putObjectFail",
@@ -2977,6 +3040,12 @@ func TestDryRun(t *testing.T) {
 			expErrMsgs: []string{
 				"failed to put object",
 				"Access Denied",
+			},
+			expPermissions: &pb.Permissions{
+				Write: &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+				// The write permission is denied, so the any read operation will return with a no such key error.
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: "The specified key does not exist."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
 			},
 		},
 		{
@@ -3006,6 +3075,11 @@ func TestDryRun(t *testing.T) {
 				"failed to stat object",
 				"Access Denied",
 			},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+			},
 		},
 		{
 			name: "listObjectsFail",
@@ -3033,6 +3107,11 @@ func TestDryRun(t *testing.T) {
 			expErrMsgs: []string{
 				"failed to list objects in bucket",
 				"Access Denied",
+			},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
 			},
 		},
 		{
@@ -3062,6 +3141,37 @@ func TestDryRun(t *testing.T) {
 				"failed to remove object",
 				"Access Denied",
 			},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
+			},
+		},
+		{
+			name: "Invalid Access Key Id",
+			minioClFn: func(t *testing.T, s *internaltest.MinioServer) *minio.Client {
+				cl, err := minio.New(s.ApiAddr, &minio.Options{
+					Creds:  credentials.NewStaticV4("invalidAccessKey", "invalidSecretKey", ""),
+					Secure: false,
+				})
+				require.NoError(t, err)
+
+				return cl
+			},
+			makeBucketFn: func(t *testing.T, cl *minio.Client) string {
+				bucketName := "testdryrun-invalidaccesskeyid"
+				_ = cl.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+
+				return bucketName
+			},
+			expErrMsgs: []string{
+				"The Access Key Id you provided does not exist in our records",
+			},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The Access Key Id you provided does not exist in our records."},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The Access Key Id you provided does not exist in our records."},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "The Access Key Id you provided does not exist in our records."},
+			},
 		},
 		{
 			name: "success",
@@ -3070,6 +3180,11 @@ func TestDryRun(t *testing.T) {
 				err := cl.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 				require.NoError(t, err)
 				return bucketName
+			},
+			expPermissions: &pb.Permissions{
+				Write:  &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
+				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
 			},
 		},
 	}
@@ -3083,17 +3198,27 @@ func TestDryRun(t *testing.T) {
 			}
 
 			bucketName := tt.makeBucketFn(t, minioClient)
-			err := dryRun(ctx, minioClient, &storagebuckets.StorageBucket{
+			per, err := dryRun(ctx, minioClient, &storagebuckets.StorageBucket{
 				BucketName: bucketName,
 			})
+			if tt.expPermissions != nil {
+				assert.Equal(t, tt.expPermissions.GetWrite().GetState(), per.GetWrite().GetState())
+				assert.Equal(t, tt.expPermissions.GetRead().GetState(), per.GetRead().GetState())
+				assert.Equal(t, tt.expPermissions.GetDelete().GetState(), per.GetDelete().GetState())
+
+				assert.Contains(t, tt.expPermissions.GetWrite().GetErrorDetails(), per.GetWrite().GetErrorDetails())
+				assert.Contains(t, tt.expPermissions.GetRead().GetErrorDetails(), per.GetRead().GetErrorDetails())
+				assert.Contains(t, tt.expPermissions.GetDelete().GetErrorDetails(), per.GetDelete().GetErrorDetails())
+			}
+			require.NotNil(t, per)
 			if len(tt.expErrMsgs) > 0 {
 				for _, errMsg := range tt.expErrMsgs {
-					require.ErrorContains(t, err, errMsg)
+					require.ErrorContains(t, err.Unwrap(), errMsg)
 				}
 				return
 			}
 
-			require.NoError(t, err)
+			require.NoError(t, err.Unwrap())
 		})
 	}
 }
