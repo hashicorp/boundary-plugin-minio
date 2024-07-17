@@ -441,23 +441,22 @@ func TestOnCreateStorageBucket(t *testing.T) {
 				if tt.expectedPermissions != nil {
 					st, ok := status.FromError(err)
 					require.True(t, ok)
-					var permission *pb.Permissions
+					var permission *pb.StorageBucketCredentialState
 					for _, detail := range st.Details() {
-						if errDetail, ok := detail.(*pb.Permissions); ok {
+						if errDetail, ok := detail.(*pb.StorageBucketCredentialState); ok {
 							permission = errDetail
 							break
 						}
 					}
 					require.NotNil(t, permission)
-					// assert.Equal(t, tt.expectedPermission.GetErrorDetails(), permission.GetErrorDetails())
 
-					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetWrite().GetState())
-					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetRead().GetState())
-					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetDelete().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetState().GetWrite().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetState().GetRead().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetState().GetDelete().GetState())
 
-					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetWrite().GetErrorDetails())
-					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetRead().GetErrorDetails())
-					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetDelete().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetState().GetWrite().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetState().GetRead().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetState().GetDelete().GetErrorDetails())
 				}
 				return
 			}
@@ -1078,22 +1077,22 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 				if tt.expectedPermissions != nil {
 					st, ok := status.FromError(err)
 					require.True(ok)
-					var permission *pb.Permissions
+					var permission *pb.StorageBucketCredentialState
 					for _, detail := range st.Details() {
-						if errDetail, ok := detail.(*pb.Permissions); ok {
+						if errDetail, ok := detail.(*pb.StorageBucketCredentialState); ok {
 							permission = errDetail
 							break
 						}
 					}
 					require.NotNil(t, permission)
 
-					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetWrite().GetState())
-					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetRead().GetState())
-					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetDelete().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetWrite().GetState(), permission.GetState().GetWrite().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetRead().GetState(), permission.GetState().GetRead().GetState())
+					assert.Equal(t, tt.expectedPermissions.GetDelete().GetState(), permission.GetState().GetDelete().GetState())
 
-					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetWrite().GetErrorDetails())
-					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetRead().GetErrorDetails())
-					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetDelete().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetWrite().GetErrorDetails(), permission.GetState().GetWrite().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetRead().GetErrorDetails(), permission.GetState().GetRead().GetErrorDetails())
+					assert.Contains(t, tt.expectedPermissions.GetDelete().GetErrorDetails(), permission.GetState().GetDelete().GetErrorDetails())
 				}
 
 				return
@@ -1968,7 +1967,7 @@ func TestHeadObject(t *testing.T) {
 				},
 				Key: "doesnt-exist",
 			},
-			expErrMsg: "failed to stat object: The specified key does not exist.",
+			expErrMsg: "specified object does not exist",
 		},
 		{
 			name: "success",
