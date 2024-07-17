@@ -2,12 +2,11 @@ module github.com/hashicorp/boundary-plugin-minio
 
 go 1.22.2
 
-replace github.com/hashicorp/boundary/sdk v0.0.42 => github.com/hashicorp/boundary-enterprise/sdk v0.0.36-0.20240604060311-9c1d9374df0f
-
 require (
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.5.0
-	github.com/hashicorp/boundary/sdk v0.0.42
+	github.com/hashicorp/boundary/sdk v0.0.43-0.20240717182311-a20aae98794a
+	github.com/hashicorp/go-multierror v1.1.1
 	github.com/minio/madmin-go/v3 v3.0.48
 	github.com/minio/minio-go/v7 v7.0.67
 	github.com/ory/dockertest/v3 v3.10.0
@@ -37,7 +36,6 @@ require (
 	github.com/hashicorp/eventlogger v0.2.6-0.20231025104552-802587e608f0 // indirect
 	github.com/hashicorp/eventlogger/filters/encrypt v0.1.8-0.20231025104552-802587e608f0 // indirect
 	github.com/hashicorp/go-kms-wrapping/v2 v2.0.14 // indirect
-	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/imdario/mergo v0.3.13 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
