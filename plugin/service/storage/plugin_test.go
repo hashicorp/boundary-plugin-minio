@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -2676,16 +2677,19 @@ func TestPutObject(t *testing.T) {
 				}
 				defer file.Close()
 
-				data := []byte("test file data\n")
-				filedata := []byte{}
-
-				for range 10000000 {
-					filedata = append(filedata, data...)
-				}
-				if _, err = file.Write(filedata); err != nil {
+				data := make([]byte, 30e6)
+				n, err := rand.Reader.Read(data)
+				if err != nil {
 					return nil, err
 				}
-				return filedata, nil
+				if n != 30e6 {
+					return nil, fmt.Errorf("did not read 30 million bytes")
+				}
+
+				if _, err = file.Write(data); err != nil {
+					return nil, err
+				}
+				return data, nil
 			},
 		},
 	}
