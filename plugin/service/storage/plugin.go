@@ -512,6 +512,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 			"x-amz-checksum-algorithm": "SHA256",
 			"x-amz-checksum-sha256":    checksum,
 		},
+		DisableMultipart: true,
 	})
 	if err != nil {
 		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to put object into minio: %v", err), err, req).Err()
