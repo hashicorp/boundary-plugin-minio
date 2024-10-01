@@ -359,13 +359,13 @@ func (sp *StoragePlugin) HeadObject(ctx context.Context, req *pb.HeadObjectReque
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err, req).Err()
+		return nil, errorToStatus(codes.Unknown, "failed to create minio sdk client", err, req).Err()
 	}
 
 	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
 	oi, err := cl.StatObject(ctx, bucket.GetBucketName(), objKey, minio.StatObjectOptions{})
 	if err != nil {
-		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to stat object: %v", err), err, req).Err()
+		return nil, errorToStatus(codes.Unknown, "failed to stat object", err, req).Err()
 	}
 
 	return &pb.HeadObjectResponse{
@@ -404,13 +404,13 @@ func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.Storag
 		Region: sa.Region,
 	})
 	if err != nil {
-		return errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err, req).Err()
+		return errorToStatus(codes.Unknown, "failed to create minio sdk client", err, req).Err()
 	}
 
 	objKey := path.Join(bucket.GetBucketPrefix(), req.GetKey())
 	obj, err := cl.GetObject(objServer.Context(), bucket.GetBucketName(), objKey, minio.GetObjectOptions{})
 	if err != nil {
-		return errorToStatus(codes.Unknown, fmt.Sprintf("failed to get object: %v", err), err, req).Err()
+		return errorToStatus(codes.Unknown, "failed to get object", err, req).Err()
 	}
 	defer obj.Close()
 
@@ -493,7 +493,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to create minio sdk client: %v", err), err, req).Err()
+		return nil, errorToStatus(codes.Internal, "failed to create minio sdk client", err, req).Err()
 	}
 
 	hash := sha256.New()
@@ -509,7 +509,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 	key := path.Join(bucket.GetBucketPrefix(), req.GetKey())
 	res, err := cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{})
 	if err != nil {
-		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to put object into minio: %v", err), err, req).Err()
+		return nil, errorToStatus(codes.Internal, "failed to put object into minio", err, req).Err()
 	}
 
 	resChecksum := res.ChecksumSHA256
@@ -563,7 +563,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 		Region: sa.Region,
 	})
 	if err != nil {
-		return nil, errorToStatus(codes.Unknown, fmt.Sprintf("failed to create minio sdk client: %v", err), err, req).Err()
+		return nil, errorToStatus(codes.Unknown, "failed to create minio sdk client", err, req).Err()
 	}
 
 	prefix := path.Join(bucket.GetBucketPrefix(), req.GetKeyPrefix())
@@ -575,7 +575,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 
 	if !req.Recursive {
 		if err := cl.RemoveObject(ctx, bucket.GetBucketName(), prefix, minio.RemoveObjectOptions{}); err != nil {
-			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error deleting minio object: %v", err), err, req).Err()
+			return nil, errorToStatus(codes.Unknown, "error deleting minio object", err, req).Err()
 		}
 		return &pb.DeleteObjectsResponse{
 			ObjectsDeleted: uint32(1),
@@ -588,7 +588,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 		Recursive: true,
 	}) {
 		if obj.Err != nil {
-			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error iterating minio bucket contents: %v", obj.Err), obj.Err, req).Err()
+			return nil, errorToStatus(codes.Unknown, "error iterating minio bucket contents", obj.Err, req).Err()
 		}
 		objects = append(objects, obj)
 	}
@@ -605,7 +605,7 @@ func (sp *StoragePlugin) DeleteObjects(ctx context.Context, req *pb.DeleteObject
 	removed := 0
 	for res := range cl.RemoveObjectsWithResult(ctx, bucket.GetBucketName(), emitter, minio.RemoveObjectsOptions{}) {
 		if res.Err != nil {
-			return nil, errorToStatus(codes.Unknown, fmt.Sprintf("error deleting minio object(s): %v", res.Err), res.Err, req).Err()
+			return nil, errorToStatus(codes.Unknown, "error deleting minio object(s)", res.Err, req).Err()
 		}
 		removed++
 	}
@@ -811,49 +811,50 @@ func errorToPermission(err error) *pb.Permission {
 // If the permission error is not recognized, a gRPC status will be returned
 // with an code and error message passed in.
 func errorToStatus(code codes.Code, msg string, err error, req any) *status.Status {
+	if err == nil {
+		// If we see this status, it means this function was called with a nil
+		// err. This is odd and should probably be investigated.
+		return status.New(code, fmt.Sprintf("%s: no error from storage service provider", msg))
+	}
+
 	errResponse := minio.ToErrorResponse(err)
 	switch errResponse.Code {
 	// https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html#ErrorCodeList
 	case "RequestTimeout":
-		return status.New(codes.DeadlineExceeded, "timeout exceeded when communicating with storage service provider")
+		return status.New(codes.DeadlineExceeded, fmt.Sprintf("%s: timeout exceeded when communicating with storage service provider", msg))
 	case "SlowDown":
-		return status.New(codes.Unavailable, "received a throttling response from storage service provider")
+		return status.New(codes.Unavailable, fmt.Sprintf("%s: received a throttling response from storage service provider", msg))
 	case "BadDigest":
-		return status.New(codes.Aborted, "storage checksum mismatch")
+		return status.New(codes.Aborted, fmt.Sprintf("%s: storage checksum mismatch", msg))
 	case "NoSuchBucket":
-		return status.New(codes.NotFound, "specified storage bucket does not exist")
+		return status.New(codes.NotFound, fmt.Sprintf("%s: specified storage bucket does not exist", msg))
 	case "NoSuchKey":
-		return status.New(codes.NotFound, "specified object does not exist")
+		return status.New(codes.NotFound, fmt.Sprintf("%s: specified object does not exist", msg))
 	}
 	if errResponse.StatusCode == 400 {
 		// catch-all for various different bad-request related errors
-		return status.New(codes.InvalidArgument, "received a bad request response from storage service provider")
+		return status.New(codes.InvalidArgument, fmt.Sprintf("%s: received a bad request response from storage service provider: %v", msg, err))
 	}
 
 	// for all other errors, we can parse as permission state errors
-
-	st := status.New(code, msg)
-	if err == nil {
-		return st
-	}
 	permission := errorToPermission(err)
 	state := &pb.StorageBucketCredentialState{State: &pb.Permissions{}}
 
 	// we can use the request type to determine what kind of response we should return
 	switch req.(type) {
-	case pb.HeadObjectRequest:
+	case pb.HeadObjectRequest, *pb.HeadObjectRequest:
 		state.State.Read = permission
-	case pb.GetObjectRequest:
+	case pb.GetObjectRequest, *pb.GetObjectRequest:
 		state.State.Read = permission
-	case pb.PutObjectRequest:
+	case pb.PutObjectRequest, *pb.PutObjectRequest:
 		state.State.Write = permission
-	case pb.DeleteObjectsRequest:
+	case pb.DeleteObjectsRequest, *pb.DeleteObjectsRequest:
 		state.State.Delete = permission
 	}
 
-	st, err = st.WithDetails(state)
+	st, err := status.New(code, fmt.Sprintf("%s: %s", msg, err)).WithDetails(state)
 	if err != nil {
-		st = status.New(code, msg)
+		st = status.New(code, fmt.Sprintf("%s: %s", msg, err))
 	}
 	return st
 }
