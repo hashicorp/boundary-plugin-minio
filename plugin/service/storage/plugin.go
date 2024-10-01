@@ -507,29 +507,12 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 	}
 
 	key := path.Join(bucket.GetBucketPrefix(), req.GetKey())
-	res, err := cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{
-		UserMetadata: map[string]string{
-			"x-amz-checksum-algorithm": "SHA256",
-			"x-amz-checksum-sha256":    checksum,
-		},
-		DisableMultipart: true,
-	})
+	_, err = cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{})
 	if err != nil {
 		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to put object into minio: %v", err), err, req).Err()
 	}
-
-	resChecksum := res.ChecksumSHA256
-	if resChecksum == "" {
-		// We were successful in putting the object but we didn't get a file
-		// SHA256 checksum from the server. Given that the call was successful,
-		// assume everything went ok and force the checksum to match so we can
-		// send it correctly back to Boundary.
-		resChecksum = checksum
-	}
-	if checksum != resChecksum {
-		return nil, status.Error(codes.Internal, "mismatched checksum")
-	}
-	decodedChecksum, err := base64.StdEncoding.DecodeString(resChecksum)
+	
+	decodedChecksum, err := base64.StdEncoding.DecodeString(checksum)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to decode checksum value from minio: %v", err)
 	}
