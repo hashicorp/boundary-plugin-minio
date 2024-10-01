@@ -507,13 +507,7 @@ func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest
 	}
 
 	key := path.Join(bucket.GetBucketPrefix(), req.GetKey())
-	res, err := cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{
-		UserMetadata: map[string]string{
-			"x-amz-checksum-algorithm": "SHA256",
-			"x-amz-checksum-sha256":    checksum,
-		},
-		DisableMultipart: true,
-	})
+	res, err := cl.PutObject(ctx, bucket.GetBucketName(), key, file, info.Size(), minio.PutObjectOptions{})
 	if err != nil {
 		return nil, errorToStatus(codes.Internal, fmt.Sprintf("failed to put object into minio: %v", err), err, req).Err()
 	}
