@@ -3314,3 +3314,227 @@ func TestEnsureServiceAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestErrorToStatus(t *testing.T) {
+	t.Run("nilErr", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", nil, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: no error from storage service provider")
+		require.Equal(t, codes.Internal, st.Code())
+	})
+
+	t.Run("requestTimeout", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{Code: "RequestTimeout"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: timeout exceeded when communicating with storage service provider")
+		require.Equal(t, codes.DeadlineExceeded, st.Code())
+	})
+
+	t.Run("slowDown", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{Code: "SlowDown"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: received a throttling response from storage service provider")
+		require.Equal(t, codes.Unavailable, st.Code())
+	})
+
+	t.Run("badDigest", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{Code: "BadDigest"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: storage checksum mismatch")
+		require.Equal(t, codes.Aborted, st.Code())
+	})
+
+	t.Run("noSuchBucket", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{Code: "NoSuchBucket"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: specified storage bucket does not exist")
+		require.Equal(t, codes.NotFound, st.Code())
+	})
+
+	t.Run("noSuchKey", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{Code: "NoSuchKey"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: specified object does not exist")
+		require.Equal(t, codes.NotFound, st.Code())
+	})
+
+	t.Run("statusCode400", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", minio.ErrorResponse{StatusCode: 400, Message: "oops there was an error doing the thing"}, nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: received a bad request response from storage service provider: oops there was an error doing the thing")
+		require.Equal(t, codes.InvalidArgument, st.Code())
+	})
+
+	t.Run("permissionsErr", func(t *testing.T) {
+		tests := []struct {
+			name                 string
+			code                 codes.Code
+			errMsg               string
+			err                  error
+			reqType              any
+			expStatusContains    string
+			statusDetailsCheckFn func(t *testing.T, p *pb.Permissions)
+		}{
+			{
+				name:              "headObject",
+				code:              codes.Internal,
+				errMsg:            "head object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           pb.HeadObjectRequest{},
+				expStatusContains: "head object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetRead(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "headObjectReqPtr",
+				code:              codes.Internal,
+				errMsg:            "head object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           &pb.HeadObjectRequest{},
+				expStatusContains: "head object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetRead(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "getObject",
+				code:              codes.Internal,
+				errMsg:            "get object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           pb.GetObjectRequest{},
+				expStatusContains: "get object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetRead(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "getObjectReqPtr",
+				code:              codes.Internal,
+				errMsg:            "get object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           &pb.GetObjectRequest{},
+				expStatusContains: "get object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetRead(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "putObject",
+				code:              codes.Internal,
+				errMsg:            "put object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           pb.PutObjectRequest{},
+				expStatusContains: "put object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetWrite(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "putObjectReqPtr",
+				code:              codes.Internal,
+				errMsg:            "put object failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           &pb.PutObjectRequest{},
+				expStatusContains: "put object failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetWrite(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "deleteObjects",
+				code:              codes.Internal,
+				errMsg:            "delete objects failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           pb.DeleteObjectsRequest{},
+				expStatusContains: "delete objects failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetDelete(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+			{
+				name:              "deleteObjectsReqPtr",
+				code:              codes.Internal,
+				errMsg:            "delete objects failed",
+				err:               minio.ErrorResponse{StatusCode: 401, Code: "AccessDenied", Message: "object access denied"},
+				reqType:           &pb.DeleteObjectsRequest{},
+				expStatusContains: "delete objects failed: object access denied",
+				statusDetailsCheckFn: func(t *testing.T, in *pb.Permissions) {
+					require.Empty(t, cmp.Diff(
+						in.GetDelete(),
+						&pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "object access denied"},
+						protocmp.Transform(),
+						protocmp.IgnoreFields(in.GetRead(), "checked_at"),
+					))
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				st := errorToStatus(tt.code, tt.errMsg, tt.err, tt.reqType)
+				require.NotNil(t, st)
+
+				require.Contains(t, st.String(), tt.expStatusContains)
+				require.Equal(t, codes.Internal, tt.code)
+
+				require.Len(t, st.Details(), 1)
+				require.IsType(t, st.Details()[0], &pb.StorageBucketCredentialState{})
+
+				state := st.Details()[0].(*pb.StorageBucketCredentialState)
+				require.NotNil(t, state.GetState())
+				if tt.statusDetailsCheckFn != nil {
+					tt.statusDetailsCheckFn(t, state.GetState())
+				}
+			})
+		}
+	})
+
+	t.Run("unknownErr", func(t *testing.T) {
+		st := errorToStatus(codes.Internal, "failed to do the thing", fmt.Errorf("oops the thing failed but it's just a normal go error"), nil)
+		require.NotNil(t, st)
+		require.Contains(t, st.String(), "failed to do the thing: oops the thing failed but it's just a normal go error")
+		require.Equal(t, codes.Internal, st.Code())
+		require.Len(t, st.Details(), 1)
+		require.Empty(t, cmp.Diff(
+			&pb.StorageBucketCredentialState{State: &pb.Permissions{}},
+			st.Details()[0],
+			protocmp.Transform(),
+		))
+	})
+}
