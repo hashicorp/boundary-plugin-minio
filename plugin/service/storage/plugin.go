@@ -17,10 +17,10 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
 	"github.com/hashicorp/go-multierror"
-	madmin "github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/grpc/codes"
@@ -162,11 +162,11 @@ func (sp *StoragePlugin) OnUpdateStorageBucket(ctx context.Context, req *pb.OnUp
 		if !sec.LastRotatedTime.IsZero() {
 			sc := sec.Clone()
 			deleteOldPersistedCredsFn = sync.OnceValue(func() error {
-				cl, err := newMadminClient(nsa, sc)
+				ac, err := client.New(nsa.EndpointUrl, sec.AccessKeyId, sec.SecretAccessKey, client.WithUseSsl(nsa.UseSSL))
 				if err != nil {
-					return fmt.Errorf("failed to create new minio admin client: %w", err)
+					return status.Errorf(codes.InvalidArgument, "failed to create client: %v", err)
 				}
-				err = cl.DeleteServiceAccount(ctx, sc.AccessKeyId)
+				err = ac.DeleteServiceAccount(ctx, sc.AccessKeyId)
 				if err != nil {
 					return fmt.Errorf("failed to delete minio service account: %w", err)
 				}
@@ -261,12 +261,10 @@ func (sp *StoragePlugin) OnDeleteStorageBucket(ctx context.Context, req *pb.OnDe
 		if err != nil {
 			return nil, err
 		}
-
-		ac, err := newMadminClient(sa, sec)
+		ac, err := client.New(sa.EndpointUrl, sec.AccessKeyId, sec.SecretAccessKey, client.WithUseSsl(sa.UseSSL))
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to create minio admin client: %v", err)
+			return nil, status.Errorf(codes.InvalidArgument, "failed to create client: %v", err)
 		}
-
 		err = ac.DeleteServiceAccount(ctx, sec.AccessKeyId)
 		if err != nil {
 			return nil, status.Errorf(codes.Unknown, "failed to delete minio service account: %v", err)
@@ -756,23 +754,15 @@ func dryRun(ctx context.Context, cl *minio.Client, bucket *storagebuckets.Storag
 	return permissions, combinedErrors
 }
 
-func newMadminClient(sa *StorageAttributes, sec *StorageSecrets) (*madmin.AdminClient, error) {
-	return madmin.NewWithOptions(sa.EndpointUrl, &madmin.Options{
-		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
-		Secure: sa.UseSSL,
-	})
-}
-
-// ensureServiceAccount ensures the credentials we received belong to a MinIO
+// ensureServiceAccount ensugres the credentials we received belong to a MinIO
 // service account. This plugin does not support using user credentials for its
 // configuration.
 func ensureServiceAccount(ctx context.Context, sa *StorageAttributes, sec *StorageSecrets) error {
-	cl, err := newMadminClient(sa, sec)
+	ac, err := client.New(sa.EndpointUrl, sec.AccessKeyId, sec.SecretAccessKey, client.WithUseSsl(sa.UseSSL))
 	if err != nil {
-		return fmt.Errorf("failed to create madmin client: %w", err)
+		return status.Errorf(codes.InvalidArgument, "failed to create client: %v", err)
 	}
-
-	if _, err = cl.InfoServiceAccount(ctx, sec.AccessKeyId); err != nil {
+	if err := ac.EnsureServiceAccount(ctx, sec.AccessKeyId); err != nil {
 		return fmt.Errorf("failed to obtain service account info: %w", err)
 	}
 

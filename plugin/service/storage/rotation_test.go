@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 	internaltest "github.com/hashicorp/boundary-plugin-minio/internal/testing"
-	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +39,7 @@ func TestRotateCredentials(t *testing.T) {
 		{
 			name: "addServiceAccountFail",
 			inSec: func() *StorageSecrets {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: json.RawMessage(`
 					{
 						"Statement": [
@@ -58,8 +58,8 @@ func TestRotateCredentials(t *testing.T) {
 				require.NoError(t, err)
 
 				return &StorageSecrets{
-					AccessKeyId:     creds.AccessKey,
-					SecretAccessKey: creds.SecretKey,
+					AccessKeyId:     creds.AccessKeyId,
+					SecretAccessKey: creds.SecretAccessKey,
 				}
 			}(),
 			expErrMsg: "failed to create new minio service account: Access Denied",
@@ -67,12 +67,12 @@ func TestRotateCredentials(t *testing.T) {
 		{
 			name: "credentialDeletionFail",
 			inSec: func() *StorageSecrets {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 				require.NoError(t, err)
 
 				return &StorageSecrets{
-					AccessKeyId:     creds.AccessKey,
-					SecretAccessKey: creds.SecretKey,
+					AccessKeyId:     creds.AccessKeyId,
+					SecretAccessKey: creds.SecretAccessKey,
 				}
 			}(),
 			credDelErr: true,
@@ -80,12 +80,12 @@ func TestRotateCredentials(t *testing.T) {
 		{
 			name: "success",
 			inSec: func() *StorageSecrets {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 				require.NoError(t, err)
 
 				return &StorageSecrets{
-					AccessKeyId:     creds.AccessKey,
-					SecretAccessKey: creds.SecretKey,
+					AccessKeyId:     creds.AccessKeyId,
+					SecretAccessKey: creds.SecretAccessKey,
 				}
 			}(),
 		},
@@ -117,7 +117,7 @@ func TestRotateCredentials(t *testing.T) {
 			// called. We then make the delete call and finally assert that the
 			// credential was removed if there was no error when attempting to
 			// delete.
-			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
+			err = server.AdminClient.EnsureServiceAccount(ctx, tt.inSec.AccessKeyId)
 			require.NoError(t, err)
 
 			if tt.credDelErr {
@@ -125,7 +125,7 @@ func TestRotateCredentials(t *testing.T) {
 				require.ErrorContains(t, delFn(), "failed to delete minio service account")
 				require.ErrorContains(t, delFn(), "failed to delete minio service account") // 2nd call should return the same state (due to sync.Once).
 
-				_, err := server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
+				err := server.AdminClient.EnsureServiceAccount(ctx, tt.inSec.AccessKeyId)
 				require.NoError(t, err)
 				return
 			} else {
@@ -133,7 +133,7 @@ func TestRotateCredentials(t *testing.T) {
 				require.NoError(t, delFn()) // 2nd call should return the same state (due to sync.Once).
 			}
 
-			_, err = server.AdminClient.InfoServiceAccount(ctx, tt.inSec.AccessKeyId)
+			err = server.AdminClient.EnsureServiceAccount(ctx, tt.inSec.AccessKeyId)
 			require.ErrorContains(t, err, "service account is not found")
 		})
 	}

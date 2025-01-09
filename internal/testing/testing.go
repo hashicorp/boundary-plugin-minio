@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minio/madmin-go/v3"
+	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/ory/dockertest/v3"
@@ -46,8 +46,8 @@ type MinioServer struct {
 	// Client is a MinIO SDK client, created with the default service account
 	// credentials.
 	Client *minio.Client
-	// AdminClient is a Madmin client created with the root account credentials.
-	AdminClient *madmin.AdminClient
+	// AdminClient is a client created with the root account credentials.
+	AdminClient *client.Client
 }
 
 type Option func(testing.TB, *options)
@@ -165,23 +165,20 @@ func NewMinioServer(t testing.TB, inOpts ...Option) *MinioServer {
 	}
 
 	// Create service account.
-	acl, err := madmin.NewWithOptions(server.ApiAddr, &madmin.Options{
-		Creds:  credentials.NewStaticV4(server.RootUsername, server.RootPassword, ""),
-		Secure: false,
-	})
+	c, err := client.New(server.ApiAddr, server.RootUsername, server.RootPassword)
 	require.NoError(t, err)
-	server.AdminClient = acl
+	server.AdminClient = c
 
-	creds, err := acl.AddServiceAccount(context.Background(), madmin.AddServiceAccountReq{
+	creds, err := c.AddServiceAccount(context.Background(), client.AddServiceAccountReq{
 		Name:        "Boundary MinIO Plugin Test",
 		Description: "MinIO credentials for Boundary MinIO plugin testing",
 	})
 	require.NoError(t, err)
-	server.ServiceAccountAccessKeyId = creds.AccessKey
-	server.ServiceAccountSecretAccessKey = creds.SecretKey
+	server.ServiceAccountAccessKeyId = creds.AccessKeyId
+	server.ServiceAccountSecretAccessKey = creds.SecretAccessKey
 
 	cl, err := minio.New(server.ApiAddr, &minio.Options{
-		Creds:  credentials.NewStaticV4(creds.AccessKey, creds.SecretKey, ""),
+		Creds:  credentials.NewStaticV4(creds.AccessKeyId, creds.SecretAccessKey, ""),
 		Secure: false,
 	})
 	require.NoError(t, err)

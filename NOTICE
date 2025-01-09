@@ -1,0 +1,9 @@
+This product includes software developed at MinIO, Inc.
+(https://min.io/).
+
+The Boundary MinIO Plugin contains unmodified
+subcomponents of the Minio madmin-go library v1.7.5
+(https://github.com/minio/madmin-go/tree/v1.7.5),
+licensed under the Apache License 2.0.
+
+See `madmin/LICENSE` for the full license text.
