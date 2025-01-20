@@ -1,6 +1,6 @@
 module github.com/hashicorp/boundary-plugin-minio/madmin
 
-go 1.23.4
+go 1.23
 
 require (
 	github.com/minio/minio-go/v7 v7.0.83
