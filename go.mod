@@ -2,12 +2,10 @@ module github.com/hashicorp/boundary-plugin-minio
 
 go 1.23.4
 
-replace github.com/hashicorp/boundary-plugin-minio/madmin => ./madmin
-
 require (
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
-	github.com/hashicorp/boundary-plugin-minio/madmin v0.0.0-00010101000000-000000000000
+	github.com/hashicorp/boundary-plugin-minio/madmin v0.1.0
 	github.com/hashicorp/boundary/sdk v0.0.49
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/minio/minio-go/v7 v7.0.83
