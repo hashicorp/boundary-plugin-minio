@@ -19,12 +19,12 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
+	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 	internaltest "github.com/hashicorp/boundary-plugin-minio/internal/testing"
 	"github.com/hashicorp/boundary-plugin-minio/internal/values"
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	"github.com/hashicorp/boundary/sdk/pbs/plugin"
 	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
-	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
@@ -141,11 +141,11 @@ type getObjectServerMock struct {
 }
 
 // Context returns the object server's context.
-func (s *getObjectServerMock) Context() context.Context {
-	if s.ctx == nil {
+func (g *getObjectServerMock) Context() context.Context {
+	if g.ctx == nil {
 		return context.Background()
 	}
-	return s.ctx
+	return g.ctx
 }
 
 // Send streams a response message to the client.
@@ -249,14 +249,14 @@ func TestOnCreateStorageBucket(t *testing.T) {
 					},
 					Secrets: &structpb.Struct{
 						Fields: func() map[string]*structpb.Value {
-							creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+							creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 								Policy: policyDenyPutObject,
 							})
 							require.NoError(t, err)
 
 							return map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							}
 						}(),
 					},
@@ -272,7 +272,7 @@ func TestOnCreateStorageBucket(t *testing.T) {
 		{
 			name: "credRotationFail",
 			req: func() *plugin.OnCreateStorageBucketRequest {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: json.RawMessage(`
 					{
 						"Statement": [
@@ -301,8 +301,8 @@ func TestOnCreateStorageBucket(t *testing.T) {
 						},
 						Secrets: &structpb.Struct{
 							Fields: map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							},
 						},
 					},
@@ -396,7 +396,7 @@ func TestOnCreateStorageBucket(t *testing.T) {
 		{
 			name: "successWithRotation",
 			req: func() *plugin.OnCreateStorageBucketRequest {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 				require.NoError(t, err)
 
 				return &plugin.OnCreateStorageBucketRequest{
@@ -410,8 +410,8 @@ func TestOnCreateStorageBucket(t *testing.T) {
 						},
 						Secrets: &structpb.Struct{
 							Fields: map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							},
 						},
 					},
@@ -484,10 +484,10 @@ func TestOnCreateStorageBucket(t *testing.T) {
 				require.NoError(t, err)
 				require.False(t, rspLastRotatedTime.IsZero())
 
-				_, err = server.AdminClient.InfoServiceAccount(ctx, inAccessKeyId)
+				err = server.AdminClient.EnsureServiceAccount(ctx, inAccessKeyId)
 				require.ErrorContains(t, err, "specified service account is not found")
 
-				_, err = server.AdminClient.InfoServiceAccount(ctx, rspAccessKeyId)
+				err = server.AdminClient.EnsureServiceAccount(ctx, rspAccessKeyId)
 				require.NoError(t, err)
 			} else {
 				require.Empty(t, cmp.Diff(tt.expRsp, rsp, protocmp.Transform(),
@@ -840,14 +840,14 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 					},
 					Secrets: &structpb.Struct{
 						Fields: func() map[string]*structpb.Value {
-							creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+							creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 								Policy: policyDenyPutObject,
 							})
 							require.NoError(t, err)
 
 							return map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							}
 						}(),
 					},
@@ -907,7 +907,7 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 						},
 					},
 					Secrets: func() *structpb.Struct {
-						creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+						creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 							Policy: json.RawMessage(`
 							{
 								"Statement": [
@@ -927,8 +927,8 @@ func TestOnUpdateStorageBucket(t *testing.T) {
 
 						return &structpb.Struct{
 							Fields: map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							},
 						}
 					}(),
@@ -1119,9 +1119,9 @@ func TestOnUpdateStorageBucket_SuccessDisableCredRotationAndNewCreds(t *testing.
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
-	newCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	newCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	req := &plugin.OnUpdateStorageBucketRequest{
@@ -1137,8 +1137,8 @@ func TestOnUpdateStorageBucket_SuccessDisableCredRotationAndNewCreds(t *testing.
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 					ConstLastRotatedTime: structpb.NewStringValue(time.Now().Format(time.RFC3339Nano)),
 				},
 			},
@@ -1153,8 +1153,8 @@ func TestOnUpdateStorageBucket_SuccessDisableCredRotationAndNewCreds(t *testing.
 			},
 			Secrets: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1170,25 +1170,21 @@ func TestOnUpdateStorageBucket_SuccessDisableCredRotationAndNewCreds(t *testing.
 
 	outAccessKeyId, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstAccessKeyId, true)
 	require.NoError(t, err)
-	require.Equal(t, newCreds.AccessKey, outAccessKeyId)
+	require.Equal(t, newCreds.AccessKeyId, outAccessKeyId)
 
 	outSecretAccessKey, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstSecretAccessKey, true)
 	require.NoError(t, err)
-	require.Equal(t, newCreds.SecretKey, outSecretAccessKey)
+	require.Equal(t, newCreds.SecretAccessKey, outSecretAccessKey)
 
 	lastRotated, err := values.GetTimeValue(rsp.GetPersisted().GetData(), ConstLastRotatedTime)
 	require.NoError(t, err)
 	require.True(t, lastRotated.IsZero())
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.ErrorContains(t, err, "specified service account is not found")
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, newCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, newCreds.AccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 2) // Creds in `server` + newCreds.
 }
 
 func TestOnUpdateStorageBucket_SuccessEnableCredRotationWithNewCreds(t *testing.T) {
@@ -1199,10 +1195,10 @@ func TestOnUpdateStorageBucket_SuccessEnableCredRotationWithNewCreds(t *testing.
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
-	newCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	newCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	req := &plugin.OnUpdateStorageBucketRequest{
@@ -1218,8 +1214,8 @@ func TestOnUpdateStorageBucket_SuccessEnableCredRotationWithNewCreds(t *testing.
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1233,8 +1229,8 @@ func TestOnUpdateStorageBucket_SuccessEnableCredRotationWithNewCreds(t *testing.
 			},
 			Secrets: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1251,30 +1247,26 @@ func TestOnUpdateStorageBucket_SuccessEnableCredRotationWithNewCreds(t *testing.
 
 	outAccessKeyId, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstAccessKeyId, true)
 	require.NoError(t, err)
-	require.NotEqual(t, persistedCreds.AccessKey, outAccessKeyId)
-	require.NotEqual(t, newCreds.AccessKey, outAccessKeyId)
+	require.NotEqual(t, persistedCreds.AccessKeyId, outAccessKeyId)
+	require.NotEqual(t, newCreds.AccessKeyId, outAccessKeyId)
 
 	outSecretAccessKey, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstSecretAccessKey, true)
 	require.NoError(t, err)
-	require.NotEqual(t, persistedCreds.SecretKey, outSecretAccessKey)
-	require.NotEqual(t, newCreds.SecretKey, outSecretAccessKey)
+	require.NotEqual(t, persistedCreds.SecretAccessKey, outSecretAccessKey)
+	require.NotEqual(t, newCreds.SecretAccessKey, outSecretAccessKey)
 
 	lastRotated, err := values.GetTimeValue(rsp.GetPersisted().GetData(), ConstLastRotatedTime)
 	require.NoError(t, err)
 	require.False(t, lastRotated.IsZero())
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.NoError(t, err)
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, newCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, newCreds.AccessKeyId)
 	require.ErrorContains(t, err, "specified service account is not found")
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, outAccessKeyId)
+	err = server.AdminClient.EnsureServiceAccount(ctx, outAccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 3) // Creds in `server` + persistedCreds + newly rotated creds.
 }
 
 func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeDisabledNewCreds(t *testing.T) {
@@ -1285,10 +1277,10 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeDisabledNewCreds(t *te
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
-	newCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	newCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	bucketAttrs := &structpb.Struct{
@@ -1305,8 +1297,8 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeDisabledNewCreds(t *te
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1315,8 +1307,8 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeDisabledNewCreds(t *te
 			Attributes: bucketAttrs,
 			Secrets: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1332,21 +1324,17 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeDisabledNewCreds(t *te
 
 	outAccessKeyId, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstAccessKeyId, true)
 	require.NoError(t, err)
-	require.Equal(t, newCreds.AccessKey, outAccessKeyId)
+	require.Equal(t, newCreds.AccessKeyId, outAccessKeyId)
 
 	outSecretAccessKey, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstSecretAccessKey, true)
 	require.NoError(t, err)
-	require.Equal(t, newCreds.SecretKey, outSecretAccessKey)
+	require.Equal(t, newCreds.SecretAccessKey, outSecretAccessKey)
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.NoError(t, err)
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, newCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, newCreds.AccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 3) // Creds in `server` + persistedCreds + newCreds
 }
 
 func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeEnabledNewCreds(t *testing.T) {
@@ -1357,10 +1345,10 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeEnabledNewCreds(t *tes
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
-	newCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	newCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	bucketAttrs := &structpb.Struct{
@@ -1377,8 +1365,8 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeEnabledNewCreds(t *tes
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 					ConstLastRotatedTime: structpb.NewStringValue(time.Now().Format(time.RFC3339Nano)),
 				},
 			},
@@ -1388,8 +1376,8 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeEnabledNewCreds(t *tes
 			Attributes: bucketAttrs,
 			Secrets: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(newCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(newCreds.SecretAccessKey),
 				},
 			},
 		},
@@ -1406,30 +1394,26 @@ func TestOnUpdateStorageBucket_SuccessNoCredRotationChangeEnabledNewCreds(t *tes
 
 	outAccessKeyId, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstAccessKeyId, true)
 	require.NoError(t, err)
-	require.NotEqual(t, persistedCreds.AccessKey, outAccessKeyId)
-	require.NotEqual(t, newCreds.AccessKey, outAccessKeyId)
+	require.NotEqual(t, persistedCreds.AccessKeyId, outAccessKeyId)
+	require.NotEqual(t, newCreds.AccessKeyId, outAccessKeyId)
 
 	outSecretAccessKey, err := values.GetStringValue(rsp.GetPersisted().GetData(), ConstSecretAccessKey, true)
 	require.NoError(t, err)
-	require.NotEqual(t, persistedCreds.SecretKey, outSecretAccessKey)
-	require.NotEqual(t, newCreds.SecretKey, outSecretAccessKey)
+	require.NotEqual(t, persistedCreds.SecretAccessKey, outSecretAccessKey)
+	require.NotEqual(t, newCreds.SecretAccessKey, outSecretAccessKey)
 
 	lastRotated, err := values.GetTimeValue(rsp.GetPersisted().GetData(), ConstLastRotatedTime)
 	require.NoError(t, err)
 	require.False(t, lastRotated.IsZero())
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.ErrorContains(t, err, "specified service account is not found")
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, newCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, newCreds.AccessKeyId)
 	require.ErrorContains(t, err, "specified service account is not found")
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, outAccessKeyId)
+	err = server.AdminClient.EnsureServiceAccount(ctx, outAccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 2) // Creds in `server` + newly rotated creds.
 }
 
 func TestOnCreateStorageBucket_NoChangesCredRotationDisabled(t *testing.T) {
@@ -1440,7 +1424,7 @@ func TestOnCreateStorageBucket_NoChangesCredRotationDisabled(t *testing.T) {
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	bucketAttrs := &structpb.Struct{
@@ -1457,8 +1441,8 @@ func TestOnCreateStorageBucket_NoChangesCredRotationDisabled(t *testing.T) {
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 					ConstLastRotatedTime: structpb.NewStringValue(time.Time{}.Format(time.RFC3339Nano)),
 				},
 			},
@@ -1477,12 +1461,8 @@ func TestOnCreateStorageBucket_NoChangesCredRotationDisabled(t *testing.T) {
 
 	require.Empty(t, cmp.Diff(req.GetPersisted(), rsp.GetPersisted(), protocmp.Transform()))
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 2) // Creds in `server` + persistedCreds
 }
 
 func TestOnCreateStorageBucket_NoChangesCredRotationEnabled(t *testing.T) {
@@ -1493,7 +1473,7 @@ func TestOnCreateStorageBucket_NoChangesCredRotationEnabled(t *testing.T) {
 	err := server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 	require.NoError(t, err)
 
-	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+	persistedCreds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 	require.NoError(t, err)
 
 	bucketAttrs := &structpb.Struct{
@@ -1510,8 +1490,8 @@ func TestOnCreateStorageBucket_NoChangesCredRotationEnabled(t *testing.T) {
 		Persisted: &storagebuckets.StorageBucketPersisted{
 			Data: &structpb.Struct{
 				Fields: map[string]*structpb.Value{
-					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKey),
-					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretKey),
+					ConstAccessKeyId:     structpb.NewStringValue(persistedCreds.AccessKeyId),
+					ConstSecretAccessKey: structpb.NewStringValue(persistedCreds.SecretAccessKey),
 					ConstLastRotatedTime: structpb.NewStringValue(time.Now().Format(time.RFC3339Nano)),
 				},
 			},
@@ -1530,12 +1510,8 @@ func TestOnCreateStorageBucket_NoChangesCredRotationEnabled(t *testing.T) {
 
 	require.Empty(t, cmp.Diff(req.GetPersisted(), rsp.GetPersisted(), protocmp.Transform()))
 
-	_, err = server.AdminClient.InfoServiceAccount(ctx, persistedCreds.AccessKey)
+	err = server.AdminClient.EnsureServiceAccount(ctx, persistedCreds.AccessKeyId)
 	require.NoError(t, err)
-
-	lsa, err := server.AdminClient.ListServiceAccounts(ctx, server.RootUsername)
-	require.NoError(t, err)
-	require.Len(t, lsa.Accounts, 2) // Creds in `server` + persistedCreds
 }
 
 func TestOnDeleteStorageBucket(t *testing.T) {
@@ -1611,7 +1587,7 @@ func TestOnDeleteStorageBucket(t *testing.T) {
 		{
 			name: "successNoRotation",
 			in: func() *pb.OnDeleteStorageBucketRequest {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 				require.NoError(t, err)
 
 				return &pb.OnDeleteStorageBucketRequest{
@@ -1627,8 +1603,8 @@ func TestOnDeleteStorageBucket(t *testing.T) {
 					Persisted: &storagebuckets.StorageBucketPersisted{
 						Data: &structpb.Struct{
 							Fields: map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 								ConstLastRotatedTime: structpb.NewStringValue(time.Time{}.Format(time.RFC3339Nano)),
 							},
 						},
@@ -1640,7 +1616,7 @@ func TestOnDeleteStorageBucket(t *testing.T) {
 		{
 			name: "successWithRotation",
 			in: func() *pb.OnDeleteStorageBucketRequest {
-				creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{})
+				creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{})
 				require.NoError(t, err)
 
 				return &pb.OnDeleteStorageBucketRequest{
@@ -1656,8 +1632,8 @@ func TestOnDeleteStorageBucket(t *testing.T) {
 					Persisted: &storagebuckets.StorageBucketPersisted{
 						Data: &structpb.Struct{
 							Fields: map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 								ConstLastRotatedTime: structpb.NewStringValue(time.Now().Format(time.RFC3339Nano)),
 							},
 						},
@@ -1683,7 +1659,7 @@ func TestOnDeleteStorageBucket(t *testing.T) {
 			accessKeyIn, err := values.GetStringValue(tt.in.GetPersisted().GetData(), ConstAccessKeyId, true)
 			require.NoError(t, err)
 
-			_, err = server.AdminClient.InfoServiceAccount(ctx, accessKeyIn)
+			err = server.AdminClient.EnsureServiceAccount(ctx, accessKeyIn)
 			if tt.expCredsDeleted {
 				require.ErrorContains(t, err, "specified service account is not found")
 			} else {
@@ -1756,14 +1732,14 @@ func TestValidatePermissions(t *testing.T) {
 					},
 					Secrets: &structpb.Struct{
 						Fields: func() map[string]*structpb.Value {
-							creds, err := server.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+							creds, err := server.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 								Policy: policyDenyPutObject,
 							})
 							require.NoError(t, err)
 
 							return map[string]*structpb.Value{
-								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKey),
-								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretKey),
+								ConstAccessKeyId:     structpb.NewStringValue(creds.AccessKeyId),
+								ConstSecretAccessKey: structpb.NewStringValue(creds.SecretAccessKey),
 							}
 						}(),
 					},
@@ -2130,8 +2106,8 @@ func TestGetObject(t *testing.T) {
 					Key: "object-name",
 				}, []byte{}
 			},
-			expErrMsg:  "failed to get object: Bucket name contains invalid characters",
-			expErrCode: codes.Unknown,
+			expErrMsg:  "Bucket name contains invalid characters",
+			expErrCode: codes.InvalidArgument,
 		},
 		{
 			name: "readObjectErr",
@@ -2216,7 +2192,7 @@ func TestGetObject(t *testing.T) {
 			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
 				objName := uuid.New().String()
 
-				data := []byte{}
+				var data []byte
 				for i := 0; i < 8192; i += len(objName) {
 					data = append(data, []byte(objName)...)
 				}
@@ -2252,7 +2228,7 @@ func TestGetObject(t *testing.T) {
 			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
 				objName := uuid.New().String()
 
-				data := []byte{}
+				var data []byte
 				for i := 0; i < 8192; i += len(objName) {
 					data = append(data, []byte(objName)...)
 				}
@@ -2285,7 +2261,7 @@ func TestGetObject(t *testing.T) {
 			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
 				objName := uuid.New().String()
 
-				data := []byte{}
+				var data []byte
 				for i := 0; i < 8192; i += len(objName) {
 					data = append(data, []byte(objName)...)
 				}
@@ -2320,7 +2296,7 @@ func TestGetObject(t *testing.T) {
 			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
 				objName := uuid.New().String()
 
-				data := []byte{}
+				var data []byte
 				for i := 0; i < 102_400; i += len(objName) {
 					data = append(data, []byte(objName)...)
 				}
@@ -2352,7 +2328,7 @@ func TestGetObject(t *testing.T) {
 			in: func(t *testing.T) (*pb.GetObjectRequest, []byte) {
 				objName := uuid.New().String()
 
-				data := []byte{}
+				var data []byte
 				for i := 0; i < 10_420; i += len(objName) {
 					data = append(data, []byte(objName)...)
 				}
@@ -2550,7 +2526,7 @@ func TestPutObject(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				file.Close()
+				_ = file.Close()
 				return []byte{}, nil
 			},
 			err:     "file is empty",
@@ -2604,7 +2580,9 @@ func TestPutObject(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				defer file.Close()
+				defer func() {
+					_ = file.Close()
+				}()
 
 				data := []byte("test file data")
 
@@ -2640,7 +2618,9 @@ func TestPutObject(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				defer file.Close()
+				defer func() {
+					_ = file.Close()
+				}()
 
 				data := []byte("test file data for bucket with prefix")
 
@@ -2675,7 +2655,9 @@ func TestPutObject(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				defer file.Close()
+				defer func() {
+					_ = file.Close()
+				}()
 
 				data := make([]byte, 30e6)
 				n, err := rand.Reader.Read(data)
@@ -2732,7 +2714,9 @@ func TestPutObject(t *testing.T) {
 			require.NoError(err)
 			obj, err := cl.GetObject(ctx, bucketName, path.Join(tt.req.Bucket.GetBucketPrefix(), tt.req.GetKey()), minio.GetObjectOptions{})
 			require.NoError(err)
-			defer obj.Close()
+			defer func() {
+				_ = obj.Close()
+			}()
 
 			fmt.Printf("path: %v\n", tt.req.Path)
 			contentLen := len(content)
@@ -3062,13 +3046,13 @@ func TestDryRun(t *testing.T) {
 		{
 			name: "putObjectFail",
 			minioClFn: func(t *testing.T, s *internaltest.MinioServer) *minio.Client {
-				creds, err := s.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := s.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: policyDenyPutObject,
 				})
 				require.NoError(t, err)
 
 				cl, err := minio.New(s.ApiAddr, &minio.Options{
-					Creds:  credentials.NewStaticV4(creds.AccessKey, creds.SecretKey, ""),
+					Creds:  credentials.NewStaticV4(creds.AccessKeyId, creds.SecretAccessKey, ""),
 					Secure: false,
 				})
 				require.NoError(t, err)
@@ -3088,7 +3072,7 @@ func TestDryRun(t *testing.T) {
 			},
 			expPermissions: &pb.Permissions{
 				Write: &pb.Permission{State: pb.StateType_STATE_TYPE_ERROR, ErrorDetails: "Access Denied."},
-				// The write permission is denied, so the any read operation will return with a no such key error.
+				// The write permission is denied, so any read operation will return with a no such key error.
 				Read:   &pb.Permission{State: pb.StateType_STATE_TYPE_UNKNOWN, ErrorDetails: "The specified key does not exist."},
 				Delete: &pb.Permission{State: pb.StateType_STATE_TYPE_OK},
 			},
@@ -3096,13 +3080,13 @@ func TestDryRun(t *testing.T) {
 		{
 			name: "statObjectFail",
 			minioClFn: func(t *testing.T, s *internaltest.MinioServer) *minio.Client {
-				creds, err := s.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := s.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: policyDenyStatObject,
 				})
 				require.NoError(t, err)
 
 				cl, err := minio.New(s.ApiAddr, &minio.Options{
-					Creds:  credentials.NewStaticV4(creds.AccessKey, creds.SecretKey, ""),
+					Creds:  credentials.NewStaticV4(creds.AccessKeyId, creds.SecretAccessKey, ""),
 					Secure: false,
 				})
 				require.NoError(t, err)
@@ -3129,13 +3113,13 @@ func TestDryRun(t *testing.T) {
 		{
 			name: "listObjectsFail",
 			minioClFn: func(t *testing.T, s *internaltest.MinioServer) *minio.Client {
-				creds, err := s.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := s.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: policyDenyListBucket,
 				})
 				require.NoError(t, err)
 
 				cl, err := minio.New(s.ApiAddr, &minio.Options{
-					Creds:  credentials.NewStaticV4(creds.AccessKey, creds.SecretKey, ""),
+					Creds:  credentials.NewStaticV4(creds.AccessKeyId, creds.SecretAccessKey, ""),
 					Secure: false,
 				})
 				require.NoError(t, err)
@@ -3162,13 +3146,13 @@ func TestDryRun(t *testing.T) {
 		{
 			name: "removeObjectFail",
 			minioClFn: func(t *testing.T, s *internaltest.MinioServer) *minio.Client {
-				creds, err := s.AdminClient.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+				creds, err := s.AdminClient.AddServiceAccount(ctx, client.AddServiceAccountReq{
 					Policy: policyDenyDeleteObject,
 				})
 				require.NoError(t, err)
 
 				cl, err := minio.New(s.ApiAddr, &minio.Options{
-					Creds:  credentials.NewStaticV4(creds.AccessKey, creds.SecretKey, ""),
+					Creds:  credentials.NewStaticV4(creds.AccessKeyId, creds.SecretAccessKey, ""),
 					Secure: false,
 				})
 				require.NoError(t, err)

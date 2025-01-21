@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/minio/madmin-go/v3"
+	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 )
 
 const (
@@ -55,13 +55,13 @@ func rotateCredentials(ctx context.Context, bucketName string, sa *StorageAttrib
 		return nil, nil, fmt.Errorf("failed to ensure minio service account credentials: %w", err)
 	}
 
-	ac, err := newMadminClient(sa, inSec)
+	ac, err := client.New(sa.EndpointUrl, inSec.AccessKeyId, inSec.SecretAccessKey, client.WithUseSsl(sa.UseSSL))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create minio admin client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create new client: %w", err)
 	}
 
 	policy := json.RawMessage(fmt.Sprintf(defaultPolicyTemplate, bucketName))
-	newCreds, err := ac.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+	newCreds, err := ac.AddServiceAccount(ctx, client.AddServiceAccountReq{
 		Name:        "Boundary MinIO Service Account",
 		Description: fmt.Sprintf("Boundary-managed MinIO service account for storage bucket '%s'", bucketName),
 		Policy:      policy,
@@ -71,16 +71,16 @@ func rotateCredentials(ctx context.Context, bucketName string, sa *StorageAttrib
 	}
 
 	newSec := &StorageSecrets{
-		AccessKeyId:     newCreds.AccessKey,
-		SecretAccessKey: newCreds.SecretKey,
+		AccessKeyId:     newCreds.AccessKeyId,
+		SecretAccessKey: newCreds.SecretAccessKey,
 		LastRotatedTime: time.Now(),
 	}
 
 	inCl := inSec.Clone()
 	return newSec, sync.OnceValue(func() error {
-		ac, err := newMadminClient(sa, inCl)
+		ac, err := client.New(sa.EndpointUrl, inCl.AccessKeyId, inCl.SecretAccessKey, client.WithUseSsl(sa.UseSSL))
 		if err != nil {
-			return fmt.Errorf("failed to create minio admin client: %w", err)
+			return fmt.Errorf("failed to create new client: %w", err)
 		}
 		err = ac.DeleteServiceAccount(ctx, inCl.AccessKeyId)
 		if err != nil {
