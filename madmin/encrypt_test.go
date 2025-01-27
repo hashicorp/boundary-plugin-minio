@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //
 // MinIO Object Storage (c) 2021 MinIO, Inc.
 //
