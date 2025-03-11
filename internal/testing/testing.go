@@ -58,7 +58,7 @@ type options struct {
 	skipCleanup bool
 }
 
-func defaultOptions(t testing.TB) options {
+func defaultOptions(_ testing.TB) options {
 	return options{
 		repository:  defaultRepository,
 		version:     defaultVersion,
@@ -139,7 +139,7 @@ func NewMinioServer(t testing.TB, inOpts ...Option) *MinioServer {
 	server := &MinioServer{
 		RootUsername: rootUsername,
 		RootPassword: rootPassword,
-		ApiAddr:      fmt.Sprintf("localhost:%s", r.GetPort("9000/tcp")),
+		ApiAddr:      fmt.Sprintf("[::1]:%s", r.GetPort("9000/tcp")),
 	}
 
 	// Ensure the instance is healthy.

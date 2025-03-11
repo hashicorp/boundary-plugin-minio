@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
 	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-secure-stdlib/parseutil"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/grpc/codes"
@@ -39,6 +40,51 @@ const (
 // MinIO storage service plugin.
 type StoragePlugin struct {
 	pb.UnimplementedStoragePluginServiceServer
+}
+
+// NormalizeStorageBucketData is called by boundary before calling OnCreate or OnUpdate
+//
+// minio supports 3 attributes:
+//   - endpoint_url
+//   - region
+//   - disable_credential_rotation
+//
+// of these, only endpoint is required and normalized. region and disable_credential_rotation
+// are passed as-is, if they were provided
+func (sp *StoragePlugin) NormalizeStorageBucketData(ctx context.Context, req *pb.NormalizeStorageBucketDataRequest) (*pb.NormalizeStorageBucketDataResponse, error) {
+	sa, err := getStorageAttributes(req.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+
+	// re-add the scheme since getStorageAttributes removes it
+	if sa.UseSSL {
+		sa.EndpointUrl = "https://" + sa.EndpointUrl
+	} else {
+		sa.EndpointUrl = "http://" + sa.EndpointUrl
+	}
+
+	if sa.EndpointUrl, err = parseutil.NormalizeAddr(sa.EndpointUrl); err != nil {
+		return nil, status.New(codes.InvalidArgument, fmt.Sprintf("failed to normalize provided %s: %s", ConstEndpointUrl, err.Error())).Err()
+	}
+
+	fields := map[string]*structpb.Value{
+		ConstEndpointUrl: structpb.NewStringValue(sa.EndpointUrl),
+	}
+
+	// only EndpointUrl is required, so we need to check the rest
+	if _, ok := req.GetAttributes().GetFields()[ConstRegion]; ok {
+		fields[ConstRegion] = structpb.NewStringValue(sa.Region)
+	}
+	if _, ok := req.GetAttributes().GetFields()[ConstDisableCredentialRotation]; ok {
+		fields[ConstDisableCredentialRotation] = structpb.NewBoolValue(sa.DisableCredentialRotation)
+	}
+
+	return &pb.NormalizeStorageBucketDataResponse{
+		Attributes: &structpb.Struct{
+			Fields: fields,
+		},
+	}, nil
 }
 
 // OnCreateStorageBucket is a hook that runs when a storage bucket is created.
