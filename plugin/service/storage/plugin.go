@@ -57,6 +57,8 @@ func (sp *StoragePlugin) NormalizeStorageBucketData(ctx context.Context, req *pb
 		return nil, err
 	}
 
+	fields := req.GetAttributes().GetFields()
+
 	// re-add the scheme since getStorageAttributes removes it
 	if sa.UseSSL {
 		sa.EndpointUrl = "https://" + sa.EndpointUrl
@@ -67,18 +69,7 @@ func (sp *StoragePlugin) NormalizeStorageBucketData(ctx context.Context, req *pb
 	if sa.EndpointUrl, err = parseutil.NormalizeAddr(sa.EndpointUrl); err != nil {
 		return nil, status.New(codes.InvalidArgument, fmt.Sprintf("failed to normalize provided %s: %s", ConstEndpointUrl, err.Error())).Err()
 	}
-
-	fields := map[string]*structpb.Value{
-		ConstEndpointUrl: structpb.NewStringValue(sa.EndpointUrl),
-	}
-
-	// only EndpointUrl is required, so we need to check the rest
-	if _, ok := req.GetAttributes().GetFields()[ConstRegion]; ok {
-		fields[ConstRegion] = structpb.NewStringValue(sa.Region)
-	}
-	if _, ok := req.GetAttributes().GetFields()[ConstDisableCredentialRotation]; ok {
-		fields[ConstDisableCredentialRotation] = structpb.NewBoolValue(sa.DisableCredentialRotation)
-	}
+	fields[ConstEndpointUrl] = structpb.NewStringValue(sa.EndpointUrl)
 
 	return &pb.NormalizeStorageBucketDataResponse{
 		Attributes: &structpb.Struct{
