@@ -183,6 +183,169 @@ func (g *getObjectServerMock) Recv() (*pb.GetObjectResponse, error) {
 	return chunk, nil
 }
 
+func TestNormalizeStorageBucketData(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		req      *plugin.NormalizeStorageBucketDataRequest
+		expected *plugin.NormalizeStorageBucketDataResponse
+		err      string
+	}{
+		{
+			name: "missing attributes",
+			req:  &plugin.NormalizeStorageBucketDataRequest{},
+			err:  "empty attributes input",
+		},
+		{
+			name: "empty attributes",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{},
+			},
+			err: "empty attributes input",
+		},
+		{
+			name: "missing required field",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstRegion:                    structpb.NewStringValue("somewhere :)"),
+						ConstDisableCredentialRotation: structpb.NewBoolValue(false),
+					},
+				},
+			},
+			err: "attributes.endpoint_url: missing required value \"endpoint_url\"",
+		},
+		{
+			name: "endpoint_url missing scheme",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("127.0.0.1:9000"),
+					},
+				},
+			},
+			err: "attributes.endpoint_url.format: unknown protocol, should be http:// or https://",
+		},
+		{
+			name: "valid endpoint_url returned unchanged",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("http://127.0.0.1:9000"),
+					},
+				},
+			},
+			expected: &plugin.NormalizeStorageBucketDataResponse{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("http://127.0.0.1:9000"),
+					},
+				},
+			},
+		},
+		{
+			name: "valid ipv6 endpoint_url returned normalized",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:BEEF:0:0:0:1:0:0001]"),
+					},
+				},
+			},
+			expected: &plugin.NormalizeStorageBucketDataResponse{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:beef::1:0:1]"),
+					},
+				},
+			},
+		},
+		{
+			name: "valid ipv6 endpoint_url with port returned normalized",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:BEEF:0:0:0:1:0:0001]:9000"),
+					},
+				},
+			},
+			expected: &plugin.NormalizeStorageBucketDataResponse{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:beef::1:0:1]:9000"),
+					},
+				},
+			},
+		},
+		{
+			name: "invalid ipv6 endpoint_url returns normalization error",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:BEEF:0:0:0:1:0:0001"),
+					},
+				},
+			},
+			err: "failed to normalize provided endpoint_url: failed to parse address",
+		},
+		{
+			name: "invalid ipv6 endpoint_url returns normalization error 2",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl: structpb.NewStringValue("https://[2001:BEEF:0:0:0:1:0:0001]:"),
+					},
+				},
+			},
+			err: "failed to normalize provided endpoint_url: url has malformed host: missing port value after colon",
+		},
+		{
+			name: "valid all fields returns normalized",
+			req: &plugin.NormalizeStorageBucketDataRequest{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl:               structpb.NewStringValue("http://[2001:BEEF:0:0:0:1:0:0001]:9000/test/path"),
+						ConstRegion:                    structpb.NewStringValue("somewhere ❤"),
+						ConstDisableCredentialRotation: structpb.NewBoolValue(false),
+					},
+				},
+			},
+			expected: &plugin.NormalizeStorageBucketDataResponse{
+				Attributes: &structpb.Struct{
+					Fields: map[string]*structpb.Value{
+						ConstEndpointUrl:               structpb.NewStringValue("http://[2001:beef::1:0:1]:9000/test/path"),
+						ConstRegion:                    structpb.NewStringValue("somewhere ❤"),
+						ConstDisableCredentialRotation: structpb.NewBoolValue(false),
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			sp := new(StoragePlugin)
+			res, err := sp.NormalizeStorageBucketData(ctx, tt.req)
+
+			if tt.err != "" {
+				require.ErrorContains(err, tt.err)
+				return
+			}
+
+			require.Nil(err)
+			for key, val := range tt.expected.GetAttributes().GetFields() {
+				v, ok := res.GetAttributes().GetFields()[key]
+				assert.True(ok, "missing expected value: %q", key)
+				if ok {
+					assert.Equal(val, v, "expected[%q]: %v, but got: %v", key, val, v)
+				}
+			}
+		})
+	}
+}
+
 func TestOnCreateStorageBucket(t *testing.T) {
 	ctx := context.Background()
 	server := internaltest.NewMinioServer(t)
