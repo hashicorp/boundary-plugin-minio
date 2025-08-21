@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -2893,6 +2894,356 @@ func TestPutObject(t *testing.T) {
 			assert.Equal(content, buffer)
 		})
 	}
+}
+
+// MockFile returns a file object (IsDir=false) for the given key.
+func MockFile(key string) *pb.Object {
+	return &pb.Object{Key: key, IsDir: false}
+}
+
+// MockDirectory returns a directory object (IsDir=true). Ensures trailing slash.
+func MockDirectory(key string) *pb.Object {
+	if !strings.HasSuffix(key, "/") {
+		key += "/"
+	}
+	return &pb.Object{Key: key, IsDir: true}
+}
+
+func TestListObjects(t *testing.T) {
+	ctx := context.Background()
+	server := internaltest.NewMinioServer(t)
+
+	bucketName := "test-bucket"
+	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
+
+	seed := []string{
+		"test-file-1",
+		"test-file-2",
+		"folder1/file-1",
+		"folder1/subfolder/file-2",
+		"folder1/subfolder/nested/file-3",
+		"folder2/file-4",
+		"folder1/",
+		"folder1/subfolder/",
+		"folder1/subfolder2/",
+		"folder1/subfolder/nested/",
+		"folder2/",
+		"folder3/",
+	}
+	for _, k := range seed {
+		var (
+			r    = bytes.NewReader(nil)
+			size int64
+		)
+		if !strings.HasSuffix(k, "/") {
+			r = bytes.NewReader([]byte("x"))
+			size = 1
+		}
+		_, err := server.Client.PutObject(ctx, bucketName, k, r, size, minio.PutObjectOptions{})
+		require.NoError(t, err)
+	}
+
+	cases := []struct {
+		name            string
+		req             *pb.ListObjectsRequest
+		wantErrMsg      string
+		wantErrCode     codes.Code
+		expectedObjects []*pb.Object
+	}{
+		// Validation cases
+		{
+			name:        "nilRequest",
+			req:         nil,
+			wantErrMsg:  "no storage bucket information found",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name:        "nilBucket",
+			req:         &pb.ListObjectsRequest{Bucket: nil},
+			wantErrMsg:  "no storage bucket information found",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name:        "emptyBucket",
+			req:         &pb.ListObjectsRequest{Bucket: &storagebuckets.StorageBucket{}},
+			wantErrMsg:  "storage bucket name is required",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "missing attributes",
+			req: &pb.ListObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+							ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+						},
+					},
+				},
+			},
+			wantErrMsg:  "empty attributes input",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageAttributes",
+			req: &pb.ListObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("foo"), // invalid endpoint
+						},
+					},
+				},
+			},
+			wantErrMsg:  "attributes.endpoint_url.format: unknown protocol, should be http:// or https://",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name: "badStorageSecrets",
+			req: &pb.ListObjectsRequest{
+				Bucket: &storagebuckets.StorageBucket{
+					BucketName: bucketName,
+					Attributes: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+						},
+					},
+					Secrets: &structpb.Struct{
+						Fields: map[string]*structpb.Value{
+							ConstAccessKeyId: structpb.NewStringValue("foo"), // missing secret_access_key
+						},
+					},
+				},
+			},
+			wantErrMsg:  "secrets.secret_access_key: missing required value \"secret_access_key\"",
+			wantErrCode: codes.InvalidArgument,
+		},
+
+		{
+			name: "list all recursively",
+			req:  makeListRequest(bucketName, "", "", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockFile("test-file-1"), MockFile("test-file-2"),
+				MockDirectory("folder1/"), MockFile("folder1/file-1"),
+				MockDirectory("folder1/subfolder/"), MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"), MockFile("folder1/subfolder/nested/file-3"),
+				MockDirectory("folder1/subfolder2/"),
+				MockDirectory("folder2/"), MockFile("folder2/file-4"),
+				MockDirectory("folder3/"),
+			},
+		},
+		{
+			name: "list all non-recursively",
+			req:  makeListRequest(bucketName, "", "", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockFile("test-file-1"), MockFile("test-file-2"),
+				MockDirectory("folder1/"), MockDirectory("folder2/"), MockDirectory("folder3/"),
+			},
+		},
+		{
+			name: "list objects with prefix folder1/ recursively",
+			req:  makeListRequest(bucketName, "", "folder1/", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockFile("folder1/file-1"),
+				MockDirectory("folder1/subfolder/"), MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"), MockFile("folder1/subfolder/nested/file-3"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with prefix folder1/ non-recursive",
+			req:  makeListRequest(bucketName, "", "folder1/", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockFile("folder1/file-1"),
+				MockDirectory("folder1/subfolder/"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with prefix folder1/sub recursive",
+			req:  makeListRequest(bucketName, "", "folder1/sub", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder/"),
+				MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"),
+				MockFile("folder1/subfolder/nested/file-3"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with prefix folder1/sub non-recursive",
+			req:  makeListRequest(bucketName, "", "folder1/sub", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder/"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name:            "list objects with prefix folder3/ recursively",
+			req:             makeListRequest(bucketName, "", "folder3/", true, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name:            "list objects with prefix folder3/ non-recursively",
+			req:             makeListRequest(bucketName, "", "folder3/", false, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name: "list objects with prefix folder1/subfolder2 recursively",
+			req:  makeListRequest(bucketName, "", "folder1/subfolder2", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with prefix folder1/subfolder2 non-recursively",
+			req:  makeListRequest(bucketName, "", "folder1/subfolder2", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name:            "list objects with prefix folder1/subfolder2/ recursively",
+			req:             makeListRequest(bucketName, "", "folder1/subfolder2/", true, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name:            "list objects with prefix folder1/subfolder2/ non-recursively",
+			req:             makeListRequest(bucketName, "", "folder1/subfolder2/", false, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name:            "list objects with non-existent prefix recursively",
+			req:             makeListRequest(bucketName, "", "nope/", true, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name:            "list objects with non-existent prefix non-recursively",
+			req:             makeListRequest(bucketName, "", "nope/", false, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+		{
+			name: "list all recursively with bucket prefix",
+			req:  makeListRequest(bucketName, "folder1/", "", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/"),
+				MockFile("folder1/file-1"),
+				MockDirectory("folder1/subfolder/"), MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"), MockFile("folder1/subfolder/nested/file-3"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list all non-recursively with bucket prefix",
+			req:  makeListRequest(bucketName, "folder1/", "", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/"),
+			},
+		},
+		{
+			name: "list objects with bucket prefix and key prefix recursively",
+			req:  makeListRequest(bucketName, "folder1/", "sub", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder/"),
+				MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"),
+				MockFile("folder1/subfolder/nested/file-3"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with bucket prefix and key prefix non-recursively",
+			req:  makeListRequest(bucketName, "folder1/", "sub", false, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder1/subfolder/"),
+				MockDirectory("folder1/subfolder2/"),
+			},
+		},
+		{
+			name: "list objects with bucket prefix and trailing slash key prefix",
+			req:  makeListRequest(bucketName, "folder1/", "subfolder/", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockFile("folder1/subfolder/file-2"),
+				MockDirectory("folder1/subfolder/nested/"),
+				MockFile("folder1/subfolder/nested/file-3"),
+			},
+		},
+		{
+			name: "list objects with bucket prefix pointing to empty area",
+			req:  makeListRequest(bucketName, "folder3/", "", true, server, true),
+			expectedObjects: []*pb.Object{
+				MockDirectory("folder3/"),
+			},
+		},
+		{
+			name:            "list objects with bucket prefix and non-existent key prefix",
+			req:             makeListRequest(bucketName, "folder1/", "nonexistent/", true, server, true),
+			expectedObjects: []*pb.Object{},
+		},
+
+		{
+			name:        "list without secrets non-recursive",
+			req:         makeListRequest(bucketName, "", "", false, server, false),
+			wantErrMsg:  "empty secrets input",
+			wantErrCode: codes.InvalidArgument,
+		},
+		{
+			name:        "list without secrets recursive",
+			req:         makeListRequest(bucketName, "", "", true, server, false),
+			wantErrMsg:  "empty secrets input",
+			wantErrCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sp := new(StoragePlugin)
+			res, err := sp.ListObjects(ctx, tt.req)
+
+			if tt.wantErrMsg != "" {
+				require.Error(t, err)
+				require.Nil(t, res)
+				assert.ErrorContains(t, err, tt.wantErrMsg)
+				assert.Equal(t, tt.wantErrCode.String(), status.Code(err).String())
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.Equal(t, len(tt.expectedObjects), len(res.Objects), "object count mismatch")
+			assert.ElementsMatch(t, tt.expectedObjects, res.Objects, "object list mismatch")
+		})
+	}
+}
+
+// makeListRequest builds a ListObjectsRequest; when withSecrets=false, Secrets is omitted.
+// bucketPrefix can be empty string if no bucket prefix is needed.
+func makeListRequest(bucket, bucketPrefix, keyPrefix string, recursive bool, server *internaltest.MinioServer, withSecrets bool) *pb.ListObjectsRequest {
+	req := &pb.ListObjectsRequest{
+		KeyPrefix: keyPrefix,
+		Recursive: recursive,
+		Bucket: &storagebuckets.StorageBucket{
+			BucketName:   bucket,
+			BucketPrefix: bucketPrefix,
+			Attributes: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					ConstEndpointUrl: structpb.NewStringValue("http://" + server.ApiAddr),
+				},
+			},
+		},
+	}
+	if withSecrets {
+		req.Bucket.Secrets = &structpb.Struct{
+			Fields: map[string]*structpb.Value{
+				ConstAccessKeyId:     structpb.NewStringValue(server.ServiceAccountAccessKeyId),
+				ConstSecretAccessKey: structpb.NewStringValue(server.ServiceAccountSecretAccessKey),
+			},
+		}
+	}
+	return req
 }
 
 func TestDeleteObjects(t *testing.T) {

@@ -478,6 +478,179 @@ func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.Storag
 	}
 }
 
+// listObjectsRecursive returns recursive list of all files and directories found under a prefix from MinIO.
+func listObjectsRecursive(ctx context.Context, cl *minio.Client, bucketName, searchPrefix string) ([]*pb.Object, error) {
+	var objects []*pb.Object
+	dirs := make(map[string]struct{})
+	seenKeys := make(map[string]struct{})
+
+	minioObjects := cl.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Prefix:    searchPrefix,
+		Recursive: true,
+	})
+
+	for objectName := range minioObjects {
+
+		// Bail out if MinIO reports an error for this object entry
+		if objectName.Err != nil {
+			return nil, objectName.Err
+		}
+		key := objectName.Key
+		isDirFile := strings.HasSuffix(key, "/")
+
+		// Skip the directory that is exactly the prefix itself (e.g., "foo/" when prefix == "foo/").
+		if isDirFile && key == searchPrefix {
+			continue
+		}
+
+		// Collect parent directories (normalize), but DO NOT mark them seen here.
+		// This ensures an explicit directory object (e.g., "folder/") will still be appended once.
+		dirPaths := buildRecursiveDirectoryPaths(key, searchPrefix)
+		for _, dirPath := range dirPaths {
+			k := ensureDir(dirPath)
+			dirs[k] = struct{}{}
+		}
+
+		// De-dupe only on the exact key string.
+		if _, exists := seenKeys[key]; exists {
+			continue
+		}
+		objects = append(objects, &pb.Object{Key: key, IsDir: isDirFile})
+		seenKeys[key] = struct{}{}
+	}
+
+	// Append synthesized directories, but only if an explicit object with the same key wasn't added.
+	for dirKey := range dirs {
+		if _, exists := seenKeys[dirKey]; exists {
+			continue
+		}
+		objects = append(objects, &pb.Object{Key: dirKey, IsDir: true})
+		seenKeys[dirKey] = struct{}{}
+	}
+	return objects, nil
+}
+
+// listObjectsNonRecursive returns only top-level files and directories within the prefix from MinIO.
+func listObjectsNonRecursive(ctx context.Context, cl *minio.Client, bucketName, searchPrefix string) ([]*pb.Object, error) {
+	var objects []*pb.Object
+	seenKeys := make(map[string]struct{})
+
+	minioObjects := cl.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+		Prefix:    searchPrefix,
+		Recursive: false,
+	})
+
+	for objectName := range minioObjects {
+		if objectName.Err != nil {
+			return nil, objectName.Err
+		}
+		key := objectName.Key
+		isDirFile := strings.HasSuffix(key, "/")
+
+		// Skip the prefix directory itself.
+		if isDirFile && key == searchPrefix {
+			continue
+		}
+
+		// Determine the top-level entry under the prefix.
+		relativeFullPath := strings.TrimSuffix(strings.TrimPrefix(key, searchPrefix), "/")
+		split := strings.Split(relativeFullPath, "/")
+		if len(split) == 0 {
+			continue
+		}
+		relativeParentPath := searchPrefix + split[0]
+
+		// If deeper segments or explicit dir file, normalize to a directory form.
+		if len(split) > 1 || isDirFile {
+			relativeParentPath = ensureDir(relativeParentPath)
+		}
+
+		if _, exists := seenKeys[relativeParentPath]; exists {
+			continue
+		}
+		objects = append(objects, &pb.Object{
+			Key:   relativeParentPath,
+			IsDir: strings.HasSuffix(relativeParentPath, "/"),
+		})
+		seenKeys[relativeParentPath] = struct{}{}
+	}
+	return objects, nil
+}
+
+// buildRecursiveDirectoryPaths collects all parent directory paths from an object key
+// that are within the given prefix. This is used to simulate directory structures in object storage.
+func buildRecursiveDirectoryPaths(objectKey, prefix string) []string {
+	var dirPaths []string
+	prefixDir := strings.TrimSuffix(prefix, "/")
+	pathParts := strings.Split(objectKey, "/")
+
+	// Build all possible parent directory paths from the split parts
+	for i := 1; i < len(pathParts); i++ {
+		dirPath := strings.Join(pathParts[:i], "/")
+
+		// Only include directories that are deeper than the search prefix
+		if len(dirPath) > len(prefixDir) && strings.HasPrefix(dirPath+"/", prefix) {
+			dirPaths = append(dirPaths, dirPath)
+		}
+	}
+	return dirPaths
+}
+
+func ensureDir(k string) string {
+	if strings.HasSuffix(k, "/") {
+		return k
+	}
+	return k + "/"
+}
+
+// ListObjects dispatches to recursive or non-recursive versions.
+func (sp *StoragePlugin) ListObjects(ctx context.Context, req *pb.ListObjectsRequest) (*pb.ListObjectsResponse, error) {
+	bucket := req.GetBucket()
+	if bucket == nil {
+		return nil, status.Error(codes.InvalidArgument, "no storage bucket information found")
+	}
+	if bucket.GetBucketName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "storage bucket name is required")
+	}
+
+	// Build MinIO client (same pattern as HeadObject/GetObject/PutObject)
+	sa, err := getStorageAttributes(bucket.GetAttributes())
+	if err != nil {
+		return nil, err
+	}
+	sec, err := getStorageSecrets(bucket.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
+		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure: sa.UseSSL,
+		Region: sa.Region,
+	})
+	if err != nil {
+		return nil, errorToStatus(codes.Unknown, "failed to create minio client", err, req).Err()
+	}
+
+	prefix := path.Join(bucket.GetBucketPrefix(), req.GetKeyPrefix())
+	// path.Join cleans the path, including removing a trailing slash, if it exists. Given that a slash is used to denote a folder,
+	// it is required here. So, if the original keyPrefix had a trailing slash, we need to add it back.
+	if strings.HasSuffix(req.GetKeyPrefix(), "/") {
+		prefix = prefix + "/"
+	}
+
+	var objs []*pb.Object
+	if req.GetRecursive() {
+		objs, err = listObjectsRecursive(ctx, cl, bucket.GetBucketName(), prefix)
+	} else {
+		objs, err = listObjectsNonRecursive(ctx, cl, bucket.GetBucketName(), prefix)
+	}
+	if err != nil {
+		return nil, errorToStatus(codes.Unknown, "failed to list objects", err, req).Err()
+	}
+
+	return &pb.ListObjectsResponse{Objects: objs}, nil
+}
+
 // PutObject is a hook that reads a file stored on local disk and stores it to
 // an external object store.
 func (sp *StoragePlugin) PutObject(ctx context.Context, req *pb.PutObjectRequest) (*pb.PutObjectResponse, error) {
@@ -872,6 +1045,8 @@ func errorToStatus(code codes.Code, msg string, err error, req any) *status.Stat
 	case pb.HeadObjectRequest, *pb.HeadObjectRequest:
 		state.State.Read = permission
 	case pb.GetObjectRequest, *pb.GetObjectRequest:
+		state.State.Read = permission
+	case pb.ListObjectsRequest, *pb.ListObjectsRequest:
 		state.State.Read = permission
 	case pb.PutObjectRequest, *pb.PutObjectRequest:
 		state.State.Write = permission
