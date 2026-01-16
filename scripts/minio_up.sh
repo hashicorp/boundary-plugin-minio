@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) HashiCorp, Inc.
+# Copyright IBM Corp. 2024, 2025
 # SPDX-License-Identifier: MPL-2.0
 
 # This shell script instantiates a MinIO instance using Docker and ensures it is
