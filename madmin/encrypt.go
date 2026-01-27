@@ -80,7 +80,8 @@ func EncryptData(password string, data []byte) ([]byte, error) {
 	nonce := sioutil.MustRandom(stream.NonceSize())
 
 	// ciphertext = salt || AEAD ID | nonce | encrypted data
-	cLen := int64(len(salt)+1+len(nonce)+len(data)) + stream.Overhead(int64(len(data)))
+	// cLen calculation: Modified by Hashicorp in 2026 to make arithmetic operations overflow-safe by casting to int64 before addition
+	cLen := int64(len(salt)) + 1 + int64(len(nonce)) + int64(len(data)) + stream.Overhead(int64(len(data)))
 	ciphertext := bytes.NewBuffer(make([]byte, 0, cLen)) // pre-alloc correct length
 
 	// Prefix the ciphertext with salt, AEAD ID and nonce
