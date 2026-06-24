@@ -11,10 +11,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/boundary-plugin-minio/internal/client"
@@ -33,7 +35,7 @@ import (
 var _ pb.StoragePluginServiceServer = (*StoragePlugin)(nil)
 
 const (
-	defaultGetObjectChunkSize = uint32(65536)
+	defaultGetObjectChunkSize = uint32(1 << 20) // 1 MiB
 )
 
 // StoragePlugin implements the StoragePluginServiceServer interface for the
@@ -433,10 +435,16 @@ func (sp *StoragePlugin) GetObject(req *pb.GetObjectRequest, objServer pb.Storag
 		return err
 	}
 
+	customTransport, err := newTransport(sa.UseSSL)
+	if err != nil {
+		return err
+	}
 	cl, err := minio.New(sa.EndpointUrl, &minio.Options{
-		Creds:  credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
-		Secure: sa.UseSSL,
-		Region: sa.Region,
+		Creds:      credentials.NewStaticV4(sec.AccessKeyId, sec.SecretAccessKey, ""),
+		Secure:     sa.UseSSL,
+		Region:     sa.Region,
+		Transport:  customTransport,
+		MaxRetries: 20,
 	})
 	if err != nil {
 		return errorToStatus(codes.Unknown, "failed to create minio sdk client", err, req).Err()
@@ -1059,4 +1067,25 @@ func errorToStatus(code codes.Code, msg string, err error, req any) *status.Stat
 		st = status.New(code, fmt.Sprintf("%s: %s", msg, err))
 	}
 	return st
+}
+
+// newTransport returns an http Transport object. The http transport object utilizes the
+// default transport created by minio. The following transport fields are updated to provide
+// more reliable connectivity when handling larger objects:
+// MaxResponseHeaderBytes is set to 1MiB to prevent header reads from stalling.
+// WriteBufferSize is set to 1MiB, matching the default buffer size used in Boundary storage.
+// ReadBufferSize is set to 1MiB, matching the default buffer size used in Boundary storage.
+// ForceAttemptHTTP2 is set to true, supporting more resilient multiplexing and avoids HOL blocking on retries.
+// IdleConnTimeout is set to 2 minutes.
+func newTransport(secure bool) (*http.Transport, error) {
+	transport, err := minio.DefaultTransport(secure)
+	if err != nil {
+		return nil, err
+	}
+	transport.MaxResponseHeaderBytes = 1 << 20  // 1 MiB prevents header read from stalling
+	transport.WriteBufferSize = 1 << 20         // 1 MiB write buffer (default is 4 KiB)
+	transport.ReadBufferSize = 1 << 20          // 1 MiB read buffer (default is 4 KiB)
+	transport.ForceAttemptHTTP2 = true          // enables HTTP/2 where supported more resilient multiplexing, avoids HOL blocking on retries
+	transport.IdleConnTimeout = 2 * time.Minute // double the idle connection timeout, default is 1 minute
+	return transport, nil
 }
