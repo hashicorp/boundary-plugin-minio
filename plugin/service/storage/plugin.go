@@ -893,7 +893,8 @@ func validateReadPermission(ctx context.Context, cl *minio.Client, bucket *stora
 		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to get object at %q: %w", objectKey, err))
 	}
 
-	oiCh := cl.ListObjects(ctx, bucket.GetBucketName(), minio.ListObjectsOptions{Recursive: true})
+	// List just the object we created above
+	oiCh := cl.ListObjects(ctx, bucket.GetBucketName(), minio.ListObjectsOptions{Prefix: objectKey, MaxKeys: 1})
 	for oi := range oiCh {
 		if oi.Err != nil {
 			if permission.GetState() == pb.StateType_STATE_TYPE_OK {
