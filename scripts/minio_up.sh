@@ -82,7 +82,7 @@ docker run -dt --rm \
   -e "MINIO_CONSOLE_ADDRESS=:9090" \
   -e 'MINIO_VOLUMES=/mnt/data' \
   --name "$container_name" \
-  minio/minio server
+  "${DOCKER_MIRROR:+$DOCKER_MIRROR/}minio/minio" server
 echo -e 'Done!'
 
 echo 'Waiting for MinIO instance to be healthy...'
