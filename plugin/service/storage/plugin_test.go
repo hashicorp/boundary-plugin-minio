@@ -23,9 +23,9 @@ import (
 	"github.com/hashicorp/boundary-plugin-minio/internal/client"
 	internaltest "github.com/hashicorp/boundary-plugin-minio/internal/testing"
 	"github.com/hashicorp/boundary-plugin-minio/internal/values"
-	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
-	"github.com/hashicorp/boundary/sdk/pbs/plugin"
-	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
+	"github.com/hashicorp/boundary-sdk/sdk/pbs/controller/api/resources/storagebuckets"
+	"github.com/hashicorp/boundary-sdk/sdk/pbs/plugin"
+	pb "github.com/hashicorp/boundary-sdk/sdk/pbs/plugin"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
@@ -3776,12 +3776,12 @@ func TestEnsureServiceAccount(t *testing.T) {
 			name: "nonServiceAccount",
 			saFunc: func(s *internaltest.MinioServer) (*StorageAttributes, *StorageSecrets) {
 				return &StorageAttributes{
-						EndpointUrl: s.ApiAddr,
-						UseSSL:      false,
-					}, &StorageSecrets{
-						AccessKeyId:     s.RootUsername,
-						SecretAccessKey: s.RootPassword,
-					}
+					EndpointUrl: s.ApiAddr,
+					UseSSL:      false,
+				}, &StorageSecrets{
+					AccessKeyId:     s.RootUsername,
+					SecretAccessKey: s.RootPassword,
+				}
 			},
 			expErrMsg: "The specified service account is not found (Specified service account does not exist)",
 		},
@@ -3789,12 +3789,12 @@ func TestEnsureServiceAccount(t *testing.T) {
 			name: "serviceAccount",
 			saFunc: func(s *internaltest.MinioServer) (*StorageAttributes, *StorageSecrets) {
 				return &StorageAttributes{
-						EndpointUrl: s.ApiAddr,
-						UseSSL:      false,
-					}, &StorageSecrets{
-						AccessKeyId:     s.ServiceAccountAccessKeyId,
-						SecretAccessKey: s.ServiceAccountSecretAccessKey,
-					}
+					EndpointUrl: s.ApiAddr,
+					UseSSL:      false,
+				}, &StorageSecrets{
+					AccessKeyId:     s.ServiceAccountAccessKeyId,
+					SecretAccessKey: s.ServiceAccountSecretAccessKey,
+				}
 			},
 		},
 	}

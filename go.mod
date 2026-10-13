@@ -1,12 +1,12 @@
 module github.com/hashicorp/boundary-plugin-minio
 
-go 1.25.7
+go 1.26.7
 
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/boundary-plugin-minio/madmin v0.1.0
-	github.com/hashicorp/boundary/sdk v0.0.59
+	github.com/hashicorp/boundary-sdk/sdk v0.1.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/go-secure-stdlib/parseutil v0.2.0
 	github.com/minio/minio-go/v7 v7.2.0
@@ -40,7 +40,7 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/eventlogger v0.2.11 // indirect
 	github.com/hashicorp/eventlogger/filters/encrypt v0.1.8-0.20231025104552-802587e608f0 // indirect
-	github.com/hashicorp/go-kms-wrapping/v2 v2.0.20 // indirect
+	github.com/hashicorp/go-kms-wrapping/v2 v2.0.23 // indirect
 	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
@@ -78,12 +78,12 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	gopkg.in/ini.v1 v1.67.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -20,8 +20,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/boundary-plugin-minio/internal/client"
-	"github.com/hashicorp/boundary/sdk/pbs/controller/api/resources/storagebuckets"
-	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
+	"github.com/hashicorp/boundary-sdk/sdk/pbs/controller/api/resources/storagebuckets"
+	pb "github.com/hashicorp/boundary-sdk/sdk/pbs/plugin"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/go-secure-stdlib/parseutil"
 	"github.com/minio/minio-go/v7"
