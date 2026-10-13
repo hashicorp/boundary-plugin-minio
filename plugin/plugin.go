@@ -5,7 +5,7 @@ package plugin
 
 import (
 	"github.com/hashicorp/boundary-plugin-minio/plugin/service/storage"
-	pb "github.com/hashicorp/boundary/sdk/pbs/plugin"
+	pb "github.com/hashicorp/boundary-sdk/sdk/pbs/plugin"
 )
 
 var (
