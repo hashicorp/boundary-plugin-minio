@@ -1,6 +1,6 @@
 module github.com/hashicorp/boundary-plugin-minio
 
-go 1.26.7
+go 1.26.10
 
 require (
 	github.com/google/go-cmp v0.7.0
