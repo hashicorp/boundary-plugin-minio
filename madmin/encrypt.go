@@ -123,6 +123,9 @@ func DecryptData(password string, data io.Reader) ([]byte, error) {
 	if _, err := io.ReadFull(data, id[:]); err != nil {
 		return nil, err
 	}
+	if FIPSEnabled() && id[0] != pbkdf2AESGCM {
+		return nil, errors.New("madmin: encryption algorithm is not supported in FIPS mode")
+	}
 	if _, err := io.ReadFull(data, nonce[:]); err != nil {
 		return nil, err
 	}
