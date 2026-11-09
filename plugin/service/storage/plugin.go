@@ -880,7 +880,7 @@ func validateReadPermission(ctx context.Context, cl *minio.Client, bucket *stora
 		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to stat object at %q: %w", objectKey, err))
 	}
 
-	_, err = cl.GetObject(ctx, bucket.GetBucketName(), objectKey, minio.GetObjectOptions{})
+	obj, err := cl.GetObject(ctx, bucket.GetBucketName(), objectKey, minio.GetObjectOptions{})
 	if err != nil {
 		p := errorToPermission(err)
 		if permission.GetState() == pb.StateType_STATE_TYPE_OK {
@@ -891,6 +891,10 @@ func validateReadPermission(ctx context.Context, cl *minio.Client, bucket *stora
 			}
 		}
 		combinedErrors = multierror.Append(combinedErrors, fmt.Errorf("failed to get object at %q: %w", objectKey, err))
+	}
+
+	if obj != nil {
+		defer obj.Close()
 	}
 
 	// List just the object we created above

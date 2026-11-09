@@ -30,6 +30,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -132,6 +133,16 @@ var (
 		"Version": "2012-10-17"
 	}`)
 )
+
+// Ignore goroutines started by the MinIO test server and HTTP transport.
+var ignoredGoroutines = []goleak.Option{
+	// Minio health check.
+	goleak.IgnoreTopFunction("github.com/minio/minio-go/v7.(*Client).HealthCheck.func1"),
+	// HTTP idle connection readers.
+	goleak.IgnoreAnyFunction("net/http.(*persistConn).readLoop"),
+	// HTTP idle connection writers.
+	goleak.IgnoreAnyFunction("net/http.(*persistConn).writeLoop"),
+}
 
 type getObjectServerMock struct {
 	grpc.ServerStream
@@ -2173,6 +2184,9 @@ func TestHeadObject(t *testing.T) {
 
 func TestGetObject(t *testing.T) {
 	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, ignoredGoroutines...)
+	})
 	server := internaltest.NewMinioServer(t)
 
 	bucketName := "test-bucket"
@@ -2911,6 +2925,9 @@ func MockDirectory(key string) *pb.Object {
 
 func TestListObjects(t *testing.T) {
 	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, ignoredGoroutines...)
+	})
 	server := internaltest.NewMinioServer(t)
 
 	bucketName := "test-bucket"
@@ -3248,6 +3265,9 @@ func makeListRequest(bucket, bucketPrefix, keyPrefix string, recursive bool, ser
 
 func TestDeleteObjects(t *testing.T) {
 	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, ignoredGoroutines...)
+	})
 	server := internaltest.NewMinioServer(t)
 	bucketName := "test-bucket"
 	require.NoError(t, server.Client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}))
@@ -3537,6 +3557,9 @@ func TestDeleteObjects(t *testing.T) {
 
 func TestDryRun(t *testing.T) {
 	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t, ignoredGoroutines...)
+	})
 
 	tests := []struct {
 		name         string
