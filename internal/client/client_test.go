@@ -4,11 +4,65 @@
 package client
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/boundary-plugin-minio/madmin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAddServiceAccountResponse(t *testing.T) {
+	t.Parallel()
+	const password = "test-password"
+	validResponse := []byte(`{"credentials":{"accessKey":"test-access-key","secretKey":"test-secret-key"}}`)
+	tests := []struct {
+		name          string
+		plaintext     []byte
+		password      string
+		emptyResponse bool
+		wantErr       string
+		wantCause     error
+	}{
+		{name: "success", plaintext: validResponse, password: password},
+		{name: "truncated ciphertext", emptyResponse: true, wantErr: "failed to decrypt response", wantCause: io.EOF},
+		{name: "wrong password", plaintext: validResponse, password: "wrong-password", wantErr: "failed to decrypt response", wantCause: madmin.ErrMaliciousData},
+		{name: "invalid JSON", plaintext: []byte("not JSON"), password: password, wantErr: "failed to parse response"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var response []byte
+			if !test.emptyResponse {
+				var err error
+				response, err = madmin.EncryptData(test.password, test.plaintext)
+				require.NoError(t, err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				assert.Equal(t, http.MethodPut, request.Method)
+				assert.Equal(t, adminPrefix+"/add-service-account", request.URL.Path)
+				_, _ = writer.Write(response)
+			}))
+			defer server.Close()
+			client, err := New(strings.TrimPrefix(server.URL, "http://"), "test-access-key", password)
+			require.NoError(t, err)
+			credential, err := client.AddServiceAccount(context.Background(), AddServiceAccountReq{})
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				assert.Empty(t, credential)
+				if test.wantCause != nil {
+					assert.ErrorIs(t, err, test.wantCause)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, Credential{AccessKeyId: "test-access-key", SecretAccessKey: "test-secret-key"}, credential)
+		})
+	}
+}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
