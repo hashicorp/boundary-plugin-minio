@@ -18,9 +18,14 @@ package madmin
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"testing"
+
+	"github.com/secure-io/sio-go"
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/pbkdf2"
 )
 
 var encryptDataTests = []struct {
@@ -41,6 +46,9 @@ func TestEncryptData(t *testing.T) {
 			ciphertext, err := EncryptData(test.Password, test.Data)
 			if err != nil {
 				t.Fatalf("Failed to encrypt data: %v", err)
+			}
+			if FIPSEnabled() && ciphertext[32] != pbkdf2AESGCM {
+				t.Fatalf("Expected PBKDF2/AES-GCM in FIPS mode, got mechanism: %d", ciphertext[32])
 			}
 
 			plaintext, err := DecryptData(test.Password, bytes.NewReader(ciphertext))
@@ -88,8 +96,106 @@ func TestDecryptData(t *testing.T) {
 				t.Fatalf("Failed to decode ciphertext data: %v", err)
 			}
 			_, err = DecryptData(test.Password, bytes.NewReader(ciphertext))
+			if FIPSEnabled() && ciphertext[32] != pbkdf2AESGCM {
+				if err == nil || err.Error() != "madmin: encryption algorithm is not supported in FIPS mode" {
+					t.Fatalf("Expected FIPS mechanism rejection, got: %v", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Failed to decrypt data: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecryptDataPBKDF2(t *testing.T) {
+	password := "test-password"
+	plaintext := []byte("test plaintext")
+	salt := make([]byte, 32)
+	key := pbkdf2.Key([]byte(password), salt, pbkdf2Cost, 32, sha256.New)
+	stream, err := sio.AES_256_GCM.Stream(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, stream.NonceSize())
+	ciphertext := bytes.NewBuffer(nil)
+	ciphertext.Write(salt)
+	ciphertext.WriteByte(pbkdf2AESGCM)
+	ciphertext.Write(nonce)
+	writer := stream.EncryptWriter(ciphertext, nonce, nil)
+	if _, err := writer.Write(plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := DecryptData(password, ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Fatal("Decrypted plaintext does not match original data")
+	}
+}
+
+func TestDecryptDataArgonMechanisms(t *testing.T) {
+	if FIPSEnabled() {
+		t.Skip("Argon2 encryption requires non-FIPS mode")
+	}
+	password := "test-password"
+	plaintext := []byte("test plaintext")
+	salt := make([]byte, 32)
+	key := argon2.IDKey([]byte(password), salt, argon2idTime, argon2idMemory, argon2idThreads, 32)
+	for _, test := range []struct {
+		name      string
+		mechanism byte
+		algorithm sio.Algorithm
+	}{
+		{name: "AES-GCM", mechanism: argon2idAESGCM, algorithm: sio.AES_256_GCM},
+		{name: "ChaCha20-Poly1305", mechanism: argon2idChaCHa20Poly1305, algorithm: sio.ChaCha20Poly1305},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stream, err := test.algorithm.Stream(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nonce := make([]byte, stream.NonceSize())
+			ciphertext := bytes.NewBuffer(nil)
+			ciphertext.Write(salt)
+			ciphertext.WriteByte(test.mechanism)
+			ciphertext.Write(nonce)
+			writer := stream.EncryptWriter(ciphertext, nonce, nil)
+			if _, err := writer.Write(plaintext); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			decrypted, err := DecryptData(password, ciphertext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(decrypted, plaintext) {
+				t.Fatal("Decrypted plaintext does not match original data")
+			}
+		})
+	}
+}
+
+func TestDecryptDataFIPSMechanisms(t *testing.T) {
+	if !FIPSEnabled() {
+		t.Skip("requires FIPS mode")
+	}
+	for _, mechanism := range []byte{argon2idAESGCM, argon2idChaCHa20Poly1305, 0xff} {
+		t.Run(fmt.Sprintf("mechanism-%d", mechanism), func(t *testing.T) {
+			ciphertext := append(make([]byte, 32), mechanism)
+			plaintext, err := DecryptData("test-password", bytes.NewReader(ciphertext))
+			if err == nil || err.Error() != "madmin: encryption algorithm is not supported in FIPS mode" {
+				t.Fatalf("Expected FIPS mechanism rejection before reading nonce, got: %v", err)
+			}
+			if plaintext != nil {
+				t.Fatal("Expected no plaintext for rejected mechanism")
 			}
 		})
 	}
