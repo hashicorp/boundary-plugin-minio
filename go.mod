@@ -6,7 +6,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/boundary-plugin-minio/madmin v0.1.0
-	github.com/hashicorp/boundary-sdk/sdk v0.1.5
+	github.com/hashicorp/boundary-sdk/sdk v0.1.6
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/go-secure-stdlib/parseutil v0.2.0
 	github.com/minio/minio-go/v7 v7.2.0
