@@ -195,6 +195,9 @@ func (c *Client) AddServiceAccount(ctx context.Context, in AddServiceAccountReq)
 
 	// got resp lets decrypt it
 	result, err := madmin.DecryptData(c.secretAccessKey, resp.Body)
+	if err != nil {
+		return Credential{}, fmt.Errorf("failed to decrypt response: %w", err)
+	}
 	addResp := &AddServiceAccountResp{}
 	if err := json.Unmarshal(result, &addResp); err != nil {
 		return Credential{}, fmt.Errorf("failed to parse response: %w", err)
